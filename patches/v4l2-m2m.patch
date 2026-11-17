@@ -1,0 +1,115 @@
+--- a/tools/raw-recv/raw-view.c
++++ b/tools/raw-recv/raw-view.c
+@@ -1,3 +1,5 @@
++/* pi-switch-dock: Pi decoder and display changes, modified 2026-11-03.
++ * SPDX-License-Identifier: GPL-2.0-only */
+ /* raw-view - live viewer for the switch-frame-tap stream.
+  *
+  * libusb + SDL2 (+ libavcodec for H.264) in ONE process: no pipe, no player,
+@@ -1396,6 +1398,8 @@
+     const char *hwname;                     /* "d3d11va", "videotoolbox", ... */
+ } h264_t;
+ 
++static void h264_close(h264_t *d);
++
+ static const enum AVHWDeviceType h264_hw_order[] = {
+ #if defined(_WIN32)
+     AV_HWDEVICE_TYPE_D3D11VA,
+@@ -1429,15 +1433,38 @@
+ 
+ static int h264_open(h264_t *d, int low_latency, int threads, int hw)
+ {
+-    const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
++    d->hwfmt = AV_PIX_FMT_NONE;
++    d->hwname = NULL;
++    const AVCodec *codec = NULL;
++#if defined(__linux__)
++    /* Pi A/B build: try the kernel V4L2 M2M decoder before upstream's
++     * CUDA/VAAPI paths. Its output is copied to ordinary NV12 for SDL. */
++    if (hw) {
++        codec = avcodec_find_decoder_by_name("h264_v4l2m2m");
++        if (codec) {
++            d->hwname = "v4l2m2m";
++            d->hwfmt = AV_PIX_FMT_DRM_PRIME;
++        }
++    }
++#endif
++    if (!codec) codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+     if (!codec) return -1;
+-    const int want_low = low_latency;
+     d->c = avcodec_alloc_context3(codec);
+     d->pkt = av_packet_alloc();
+     d->frm = av_frame_alloc();
+     d->swfrm = av_frame_alloc();
+     if (!d->c || !d->pkt || !d->frm || !d->swfrm) return -1;
+-    d->hwfmt = AV_PIX_FMT_NONE;
++    if (!d->hwname) d->hwfmt = AV_PIX_FMT_NONE;
++#if defined(__linux__)
++    if (d->hwname && d->hwfmt == AV_PIX_FMT_DRM_PRIME) {
++        /* Provide an explicit selector for FFmpeg builds whose V4L2 M2M
++         * wrapper does not install a default get_format callback. */
++        d->c->opaque = d;
++        d->c->get_format = h264_get_format;
++        low_latency = 1;
++    } else
++#endif
++    {
+     d->hwname = NULL;
+     for (size_t k = 0; hw && k < sizeof(h264_hw_order) / sizeof(h264_hw_order[0]) && d->hwfmt == AV_PIX_FMT_NONE; k++) {
+ #ifdef SFT_VA_SHIM
+@@ -1458,6 +1485,7 @@
+             break;
+         }
+     }
++    }
+     if (d->hwfmt != AV_PIX_FMT_NONE) low_latency = 1;   /* the GPU decodes it whole: no threads to hold frames */
+     if (low_latency) {
+         /* every packet is a whole IDR frame: output it the moment it decodes */
+@@ -1470,25 +1498,13 @@
+         d->c->thread_type = FF_THREAD_FRAME;
+     }
+     int rc = avcodec_open2(d->c, codec, NULL);
+-    if (rc < 0 && d->hwfmt != AV_PIX_FMT_NONE) {
++    if (rc < 0 && d->hwname) {
+         char err[128];
+         av_strerror(rc, err, sizeof(err));
+-        fprintf(stderr, "decode: %s could not open the stream (%s) - software\n", d->hwname ? d->hwname : "GPU", err);
+-        avcodec_free_context(&d->c);
+-        av_buffer_unref(&d->hwdev);
+-        d->hwfmt = AV_PIX_FMT_NONE;
+-        d->hwname = NULL;
+-        d->c = avcodec_alloc_context3(codec);
+-        if (!d->c) return -1;
+-        low_latency = want_low;
+-        if (low_latency) {
+-            d->c->flags |= AV_CODEC_FLAG_LOW_DELAY;
+-            d->c->thread_count = 1;
+-        } else {
+-            d->c->thread_count = threads;
+-            d->c->thread_type = FF_THREAD_FRAME;
+-        }
+-        rc = avcodec_open2(d->c, codec, NULL);
++        fprintf(stderr, "decode: %s could not open the stream (%s) - software\n", d->hwname, err);
++        h264_close(d);
++        memset(d, 0, sizeof(*d));
++        return h264_open(d, 1, 1, 0);
+     }
+     if (rc == 0) fprintf(stderr, "decode: %s\n", d->hwname ? d->hwname : "software");
+     else {
+--- a/tools/raw-recv/ui.h
++++ b/tools/raw-recv/ui.h
+@@ -1,3 +1,5 @@
++/* pi-switch-dock: display the built release tag, modified 2026-11-03.
++ * SPDX-License-Identifier: GPL-2.0-only */
+ /* ui.h - v0.7.12: the viewer's look. One home screen while there is no
+  * picture, and one settings drawer (Esc, or the Settings button) with every
+  * option in it, over the home screen or over the game - mouse or keys. The
+@@ -1280,7 +1282,7 @@
+     {
+         const float dot = ui_d(10), bx = ui_chrome_left_extent_px(ren) + ui_d(4), by = ui_d(16);
+         ui_rrect(ren, bx, by, dot, dot, dot * 0.5f, UI_ACC);
+-        text_draw(ren, "Switch Frame Tap", (int)(bx + ui_d(20)), (int)(by - ui_d(4)), ui_px(18), 1, UI_INK, 0);
++        text_draw(ren, "Switch Frame Tap " SFT_VERSION, (int)(bx + ui_d(20)), (int)(by - ui_d(4)), ui_px(18), 1, UI_INK, 0);
+     }
+     {
+         const char *dir = rec_dir_for_menu();

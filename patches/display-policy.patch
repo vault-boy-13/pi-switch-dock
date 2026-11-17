@@ -1,0 +1,101 @@
+--- /dev/null
++++ b/tools/raw-recv/pi-display-policy.h
+@@ -0,0 +1,57 @@
++/* pi-switch-dock: high-resolution HDMI policy, modified 2026-11-03.
++ * SPDX-License-Identifier: GPL-2.0-only */
++#ifndef PI_DISPLAY_POLICY_H
++#define PI_DISPLAY_POLICY_H
++#include <stdlib.h>
++
++typedef struct { int width,height,refresh; } pi_display_mode;
++
++/* Select only advertised modes. High-resolution panels scale the <=1080p
++ * source themselves; prefer 120 Hz, then 60 Hz, instead of native 4K30. */
++static int pi_display_pick(const pi_display_mode *modes,int count,int allow120)
++{
++    int high=0,best=-1,score=-1;
++    for(int i=0;i<count;i++)if(modes[i].width>1920 || modes[i].height>1080)high=1;
++    if(!high)return -1;
++    for(int i=0;i<count;i++){
++        const pi_display_mode *m=&modes[i];
++        if(m->width!=1920 || m->height!=1080)continue;
++        int rank=-1;
++        if(allow120 && m->refresh>=119 && m->refresh<=121)rank=200-abs(m->refresh-120);
++        else if(m->refresh>=59 && m->refresh<=61)rank=100-abs(m->refresh-60);
++        if(rank>score){score=rank;best=i;}
++    }
++    return best;
++}
++
++#ifndef PI_DISPLAY_POLICY_TEST
++static int pi_display_fullscreen(SDL_Window *win)
++{
++    const char *driver=SDL_GetCurrentVideoDriver();
++    const char *setting=getenv("SFT_DISPLAY_POLICY");
++    if(!driver || strcmp(driver,"KMSDRM") || (setting && !strcmp(setting,"native")))
++        return SDL_SetWindowFullscreen(win,SDL_WINDOW_FULLSCREEN_DESKTOP);
++    int display=SDL_GetWindowDisplayIndex(win),count=SDL_GetNumDisplayModes(display);
++    if(count<=0)return SDL_SetWindowFullscreen(win,SDL_WINDOW_FULLSCREEN_DESKTOP);
++    SDL_DisplayMode *sdl=calloc((size_t)count,sizeof(*sdl));
++    pi_display_mode *modes=calloc((size_t)count,sizeof(*modes));
++    if(!sdl || !modes){free(sdl);free(modes);return SDL_SetWindowFullscreen(win,SDL_WINDOW_FULLSCREEN_DESKTOP);}
++    for(int i=0;i<count;i++)if(SDL_GetDisplayMode(display,i,&sdl[i])==0)
++        modes[i]=(pi_display_mode){sdl[i].w,sdl[i].h,sdl[i].refresh_rate};
++    int result=-1;
++    for(int allow120=1;allow120>=0;allow120--){
++        int selected=pi_display_pick(modes,count,allow120);
++        if(selected<0)break;
++        SDL_DisplayMode *mode=&sdl[selected];
++        if(SDL_SetWindowDisplayMode(win,mode)==0 && SDL_SetWindowFullscreen(win,SDL_WINDOW_FULLSCREEN)==0){
++            fprintf(stderr,"video: high-resolution display policy: HDMI %dx%d at %d Hz\n",mode->w,mode->h,mode->refresh_rate);
++            result=0;break;
++        }
++        fprintf(stderr,"video: HDMI %dx%d at %d Hz unavailable: %s\n",mode->w,mode->h,mode->refresh_rate,SDL_GetError());
++    }
++    free(sdl);free(modes);
++    if(result==0)return 0;
++    return SDL_SetWindowFullscreen(win,SDL_WINDOW_FULLSCREEN_DESKTOP);
++}
++#endif
++#endif
+--- a/tools/raw-recv/raw-view.c
++++ b/tools/raw-recv/raw-view.c
+@@ -136,6 +136,7 @@
+ static int g_paced = 0;             /* --paced: a recording fed through the live pipeline at 60 fps, looped (tests) */
+ static double g_run_secs = 0;       /* --seconds: stop the live pipeline after this long (tests) */
+ static const char *g_shot = NULL;    /* --shot: save the last frame drawn (overlay included) as BMP (tests) */
++#include "pi-display-policy.h"
+ static int g_start_fullscreen = 0; /* pi-switch-dock: fullscreen, async V4L2 and DRM display; modified 2026-11-03, GPL-2.0-only */
+ static int g_open_settings = 0;      /* --settings / --padmenu: the drawer open at start, on page 1 / 2 (tests) */
+ static const char *g_mp4 = NULL;     /* --mp4 FILE: record into FILE from the start (tests) */
+@@ -1685,12 +1686,12 @@
+             g_pre_fs_valid = 0;
+         }
+         window_geom_capture(win);
+-        SDL_SetWindowFullscreen(win, SDL_WINDOW_FULLSCREEN_DESKTOP);
++        pi_display_fullscreen(win);
+         /* v0.7.13: a screen whose mode is not 16:9 shows the picture with bars
+          * at the sides - often a TV Windows put on 4096x2160 instead of 3840x2160,
+          * which the TV then squeezes into its 16:9 panel (a narrower picture) */
+         SDL_DisplayMode dm;
+-        if (SDL_GetDesktopDisplayMode(SDL_GetWindowDisplayIndex(win), &dm) == 0 && dm.h > 0) {
++        if (SDL_GetCurrentDisplayMode(SDL_GetWindowDisplayIndex(win), &dm) == 0 && dm.h > 0) {
+             const double a = (double)dm.w / dm.h;
+             fprintf(stderr, "\nfullscreen: the screen is %dx%d at %d Hz\n", dm.w, dm.h, dm.refresh_rate);
+             if (a > 16.0 / 9.0 * 1.03 || a < 16.0 / 9.0 * 0.97) {
+@@ -3313,13 +3314,13 @@
+             window_geom_apply(win);          /* second pass after first layout */
+         }
+         if (g_start_fullscreen) {
+-            if (SDL_SetWindowFullscreen(win, SDL_WINDOW_FULLSCREEN_DESKTOP) != 0 ||
++            if (pi_display_fullscreen(win) != 0 ||
+                 !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP)) {
+                 fprintf(stderr, "startup fullscreen failed: %s\n", SDL_GetError());
+                 return 1;
+             }
+             SDL_DisplayMode dm;
+-            if (SDL_GetDesktopDisplayMode(SDL_GetWindowDisplayIndex(win), &dm) == 0)
++            if (SDL_GetCurrentDisplayMode(SDL_GetWindowDisplayIndex(win), &dm) == 0)
+                 fprintf(stderr, "startup: fullscreen on (%dx%d at %d Hz)\n", dm.w, dm.h, dm.refresh_rate);
+         }
+         rec_init(g_rec_dir, g_mp4);

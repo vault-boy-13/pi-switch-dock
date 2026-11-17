@@ -1,0 +1,138 @@
+--- a/tools/raw-recv/pi-display-rate.h
++++ b/tools/raw-recv/pi-display-rate.h
+@@ -1,10 +1,10 @@
+-/* pi-switch-dock: added 2026-11-03; SPDX-License-Identifier: GPL-2.0-only */
++/* pi-switch-dock: modified 2026-11-03; SPDX-License-Identifier: GPL-2.0-only */
+ /* Incoming media cadence, independent of decoder scheduling and frame drops. */
+ #include <stdint.h>
+ typedef struct {
+     uint64_t first;
+     uint32_t last,width,height,count;
+-    int valid,fast;
++    int valid,fast,pace60;
+ } pi_display_rate;
+ 
+ static int pi_display_rate_sample(pi_display_rate *s,uint32_t id,uint32_t width,uint32_t height,
+@@ -21,6 +21,8 @@
+     if(elapsed>=frequency){
+         /* Hysteresis prevents flapping at a transient late frame. */
+         double fps=(double)s->count*frequency/elapsed;
++        if(fps>=55.0 && fps<=65.0)s->pace60=1;
++        else if(fps<52.0 || fps>68.0)s->pace60=0;
+         if(fps>=48.0)s->fast=1;
+         else if(fps<=40.0)s->fast=0;
+         s->first=tick;s->count=0;
+--- a/tools/raw-recv/pi-kms-scanout.h
++++ b/tools/raw-recv/pi-kms-scanout.h
+@@ -1,4 +1,4 @@
+-/* pi-switch-dock: added 2026-11-03; SPDX-License-Identifier: GPL-2.0-only */
++/* pi-switch-dock: modified 2026-11-03; SPDX-License-Identifier: GPL-2.0-only */
+ /* Optional direct DMA-BUF scanout. Only the SDL/main thread touches DRM. */
+ #include <SDL_syswm.h>
+ #include <xf86drm.h>
+@@ -11,8 +11,19 @@
+ static struct {
+     int fd, initialized, disabled, active, reported,current;
+     uint32_t plane,crtc,crtc_index,screen_w,screen_h;
++    uint32_t refresh,next_seq;
++    int pacing_valid;
++    int64_t last_pts;
+     pi_scan_frame frames[8];
+ } pi_scan={.fd=-1,.current=-1};
++
++static int pi_scan_pacing_active(void)
++{
++    return pi_scan_pacing_enabled() && SDL_AtomicGet(&pi_pace60) &&
++        ((pi_scan.refresh>=59 && pi_scan.refresh<=61) ||
++         (pi_scan.refresh>=119 && pi_scan.refresh<=121));
++}
++
+ 
+ static uint64_t pi_plane_property(uint32_t plane,const char *name,uint32_t *id)
+ {
+@@ -35,6 +46,7 @@
+ 
+ static void pi_scan_hide(void)
+ {
++    pi_scan.pacing_valid=0;
+     if(pi_scan.active){
+         if(drmModeSetPlane(pi_scan.fd,pi_scan.plane,pi_scan.crtc,0,0,0,0,0,0,0,0,0,0)!=0){
+             fprintf(stderr,"scanout: disable plane failed: %s\n",strerror(errno));
+@@ -62,6 +74,7 @@
+         if(c && c->mode_valid && c->buffer_id){
+             pi_scan.crtc=c->crtc_id;pi_scan.crtc_index=(uint32_t)i;
+             pi_scan.screen_w=c->width;pi_scan.screen_h=c->height;
++            pi_scan.refresh=c->mode.vrefresh;
+         }
+         if(c)drmModeFreeCrtc(c);
+     }
+@@ -102,6 +115,27 @@
+         (pi_scan.crtc_index<<DRM_VBLANK_HIGH_CRTC_SHIFT));
+     if(drmWaitVBlank(pi_scan.fd,&v)<0)return 0;
+     uint32_t seq=v.reply.sequence;
++
++    /* Pace 60 fps on every 60 Hz vblank or every second 120 Hz vblank.
++     * Reset after source sessions, pauses or missed scheduling deadlines. */
++    if(pi_scan_pacing_active()){
++        if(!pi_scan.pacing_valid || frame->pts<=pi_scan.last_pts ||
++           frame->pts>pi_scan.last_pts+4 || (int32_t)(seq-pi_scan.next_seq)>4){
++            pi_scan.next_seq=seq+1;
++            pi_scan.pacing_valid=1;
++        }
++        if((int32_t)(seq-pi_scan.next_seq)>0){
++            pi_scan.next_seq=seq+1;
++        }
++        drmVBlank paced={0};
++        paced.request.type=(drmVBlankSeqType)(DRM_VBLANK_ABSOLUTE|
++            (pi_scan.crtc_index<<DRM_VBLANK_HIGH_CRTC_SHIFT));
++        paced.request.sequence=pi_scan.next_seq;
++        if(drmWaitVBlank(pi_scan.fd,&paced)<0)return 0;
++        seq=paced.reply.sequence;
++        pi_scan.next_seq+=(pi_scan.refresh>=119?2:1);
++        pi_scan.last_pts=frame->pts;
++    }
+     int slot=-1;
+     for(int i=0;i<8;i++){
+         if(i!=pi_scan.current && pi_scan.frames[i].frame && (int32_t)(seq-pi_scan.frames[i].seq)>=3)
+--- a/tools/raw-recv/raw-view.c
++++ b/tools/raw-recv/raw-view.c
+@@ -1520,8 +1520,13 @@
+  * V4L2 is asynchronous: EAGAIN means poll again, not wait for another packet. */
+ #include "pi-display-rate.h"
+ static SDL_atomic_t pi_fast_display;
++static SDL_atomic_t pi_pace60;
+ static int pi_scan_enabled(void) {
+     const char *value=getenv("SFT_KMS_SCANOUT");
++    return value && strcmp(value,"0");
++}
++static int pi_scan_pacing_enabled(void) {
++    const char *value=getenv("SFT_SCANOUT_PACING");
+     return value && strcmp(value,"0");
+ }
+ static int pi_native_display(int width,int height) {
+@@ -2550,6 +2555,7 @@
+     uint32_t last_kind = 0; int have_kind = 0;
+     pi_display_rate display_rate={0};
+     SDL_AtomicSet(&pi_fast_display,0);
++    SDL_AtomicSet(&pi_pace60,0);
+     int v4l2_errors = 0;
+     const Uint64 freq = SDL_GetPerformanceFrequency();
+     while (!g_quit && !g_dec_stop) {
+@@ -2575,6 +2581,7 @@
+         last_kind = hdr.kind; have_kind = 1;
+         if(pi_scan_enabled()){
+             int fast=pi_display_rate_sample(&display_rate,hdr.kind,hdr.width,hdr.height,t_hdr,freq);
++            SDL_AtomicSet(&pi_pace60,display_rate.pace60);
+             if(fast!=SDL_AtomicGet(&pi_fast_display)){
+                 SDL_AtomicSet(&pi_fast_display,fast);
+                 fprintf(stderr,"video: high-rate 1080p path %s (%ux%u)\n",fast?"enabled":"disabled",hdr.width,hdr.height);
+@@ -2804,7 +2811,8 @@
+             }
+             goto stats;
+         }
+-        const int display_limit=pi_native_display(g_fq[g_fh]->width,g_fq[g_fh]->height)?1:2;
++        const int display_limit=pi_native_display(g_fq[g_fh]->width,g_fq[g_fh]->height)?
++            (pi_scan_pacing_active()?2:1):2;
+         while (g_fn > display_limit) {          /* Only high-rate 1080p selects the latest completed frame. */
+             av_frame_unref(g_fq[g_fh]);
+             g_fh = (g_fh + 1) % FQ;

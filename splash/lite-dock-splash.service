@@ -1,0 +1,19 @@
+[Unit]
+Description=Lite Dock graphical startup
+DefaultDependencies=no
+After=local-fs.target systemd-udev-trigger.service
+Before=basic.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=simple
+Environment=HOME=/root
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=SDL_KMSDRM_DEVICE_INDEX=1
+ExecStart=/usr/local/libexec/lite-dock-splash /usr/local/share/lite-dock-splash
+TimeoutStopSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sysinit.target

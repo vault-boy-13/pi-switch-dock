@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Switch Lite dock temperature-controlled fan
+After=local-fs.target
+Before=switch-frame-tap-viewer.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/pinctrl set 18 op dh
+ExecStart=/usr/bin/python3 /usr/local/sbin/switch-dock-fan.py
+ExecStopPost=/usr/bin/pinctrl set 18 op dh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

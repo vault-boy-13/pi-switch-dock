@@ -1,0 +1,27 @@
+Switch Frame Tap is an independent upstream project by Tomas Uribe:
+https://github.com/TomasUribe/switch-frame-tap
+
+The upstream viewer source is not included in this repository. The installer
+downloads the pinned source archive and verifies its SHA256 before applying
+the Pi patches. The upstream project and its source retain their own copyright
+and license notices.
+
+The pi-switch-dock scripts, boot configuration helper, tests, documentation
+and patches are distributed under GNU GPL version 2 only (GPL-2.0-only).
+See LICENSE for the full license text. Upstream copyright notices remain
+with the downloaded source. This repository distributes source and a patch,
+not prebuilt receiver executables.
+
+The Pi patches add V4L2 M2M hardware decoding, fullscreen startup, low-latency
+DRM scanout, frame pacing, HDMI mode selection and a visible build version.
+Patch headers identify the modified upstream files and carry modification
+notices dated 2026-11-03. The patches are GPL-2.0-only.
+
+Nintendo and Nintendo Switch are trademarks of Nintendo Co., Ltd. This is an
+independent project. It is not affiliated with or endorsed by Nintendo. This
+repository does not include Nintendo firmware, games, or console software.
+
+The Lite Dock userspace splash source and fixed English bitmap assets in
+splash/ are original project material, licensed under GPL-2.0-only. The splash
+uses SDL2; its executable is compiled locally during initial installation.
+

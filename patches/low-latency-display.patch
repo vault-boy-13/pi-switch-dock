@@ -1,0 +1,526 @@
+--- a/tools/raw-recv/Makefile
++++ b/tools/raw-recv/Makefile
+@@ -67,3 +67,7 @@
+ 	rm -f raw-view raw-recv clarity.o clarity_shader.h
+ 
+ .PHONY: all test clean
++
++VIEW_CFLAGS += $(shell pkg-config --cflags libdrm)
++VIEW_LIBS += $(shell pkg-config --libs libdrm)
++# pi-switch-dock: libdrm display support, modified 2026-11-03; GPL-2.0-only
+--- /dev/null
++++ b/tools/raw-recv/pi-display-rate.h
+@@ -0,0 +1,30 @@
++/* pi-switch-dock: added 2026-11-03; SPDX-License-Identifier: GPL-2.0-only */
++/* Incoming media cadence, independent of decoder scheduling and frame drops. */
++#include <stdint.h>
++typedef struct {
++    uint64_t first;
++    uint32_t last,width,height,count;
++    int valid,fast;
++} pi_display_rate;
++
++static int pi_display_rate_sample(pi_display_rate *s,uint32_t id,uint32_t width,uint32_t height,
++                                  uint64_t tick,uint64_t frequency)
++{
++    if(!frequency)return 0;
++    if(!s->valid || id<s->last || width!=s->width || height!=s->height ||
++       tick<s->first || tick-s->first>frequency*4){
++        *s=(pi_display_rate){.first=tick,.last=id,.width=width,.height=height,.valid=1};
++        return 0;
++    }
++    s->last=id;s->count++;
++    uint64_t elapsed=tick-s->first;
++    if(elapsed>=frequency){
++        /* Hysteresis prevents flapping at a transient late frame. */
++        double fps=(double)s->count*frequency/elapsed;
++        if(fps>=48.0)s->fast=1;
++        else if(fps<=40.0)s->fast=0;
++        s->first=tick;s->count=0;
++    }
++    return s->fast && width>1280 && height>720;
++}
++
+--- /dev/null
++++ b/tools/raw-recv/pi-kms-scanout.h
+@@ -0,0 +1,149 @@
++/* pi-switch-dock: added 2026-11-03; SPDX-License-Identifier: GPL-2.0-only */
++/* Optional direct DMA-BUF scanout. Only the SDL/main thread touches DRM. */
++#include <SDL_syswm.h>
++#include <xf86drm.h>
++#include <xf86drmMode.h>
++#include <drm_fourcc.h>
++#include <libavutil/hwcontext_drm.h>
++#include <errno.h>
++
++typedef struct { uint32_t fb, seq; AVFrame *frame; } pi_scan_frame;
++static struct {
++    int fd, initialized, disabled, active, reported,current;
++    uint32_t plane,crtc,crtc_index,screen_w,screen_h;
++    pi_scan_frame frames[8];
++} pi_scan={.fd=-1,.current=-1};
++
++static uint64_t pi_plane_property(uint32_t plane,const char *name,uint32_t *id)
++{
++    uint64_t value=UINT64_MAX;
++    drmModeObjectProperties *p=drmModeObjectGetProperties(pi_scan.fd,plane,DRM_MODE_OBJECT_PLANE);
++    if(!p)return value;
++    for(uint32_t i=0;i<p->count_props;i++){
++        drmModePropertyRes*q=drmModeGetProperty(pi_scan.fd,p->props[i]);
++        if(q && !strcmp(q->name,name)){value=p->prop_values[i];if(id)*id=p->props[i];}
++        if(q)drmModeFreeProperty(q);
++    }
++    drmModeFreeObjectProperties(p);return value;
++}
++
++static void pi_scan_release(pi_scan_frame *f)
++{
++    if(f->fb)drmModeRmFB(pi_scan.fd,f->fb);
++    av_frame_free(&f->frame);memset(f,0,sizeof(*f));
++}
++
++static void pi_scan_hide(void)
++{
++    if(pi_scan.active){
++        if(drmModeSetPlane(pi_scan.fd,pi_scan.plane,pi_scan.crtc,0,0,0,0,0,0,0,0,0,0)!=0){
++            fprintf(stderr,"scanout: disable plane failed: %s\n",strerror(errno));
++            return; /* Keep framebuffer references while still scanned out. */
++        }
++        pi_scan.active=0;
++        pi_scan.current=-1;
++    }
++    if(pi_scan.fd>=0)for(int i=0;i<8;i++)pi_scan_release(&pi_scan.frames[i]);
++}
++
++static int pi_scan_init(SDL_Window *win,uint32_t format)
++{
++    if(pi_scan.disabled)return 0;
++    if(pi_scan.initialized)return 1;
++    SDL_SysWMinfo info;SDL_VERSION(&info.version);
++    if(!SDL_GetWindowWMInfo(win,&info) || info.subsystem!=SDL_SYSWM_KMSDRM)goto fail;
++    pi_scan.fd=info.info.kmsdrm.drm_fd;
++    if(pi_scan.fd<0 || !drmIsMaster(pi_scan.fd))goto fail;
++    if(drmSetClientCap(pi_scan.fd,DRM_CLIENT_CAP_UNIVERSAL_PLANES,1)<0)goto fail;
++    drmModeRes*r=drmModeGetResources(pi_scan.fd);
++    if(!r)goto fail;
++    for(int i=0;i<r->count_crtcs;i++){
++        drmModeCrtc*c=drmModeGetCrtc(pi_scan.fd,r->crtcs[i]);
++        if(c && c->mode_valid && c->buffer_id){
++            pi_scan.crtc=c->crtc_id;pi_scan.crtc_index=(uint32_t)i;
++            pi_scan.screen_w=c->width;pi_scan.screen_h=c->height;
++        }
++        if(c)drmModeFreeCrtc(c);
++    }
++    drmModeFreeResources(r);
++    if(!pi_scan.crtc)goto fail;
++    drmModePlaneRes*planes=drmModeGetPlaneResources(pi_scan.fd);
++    if(!planes)goto fail;
++    for(uint32_t i=0;i<planes->count_planes;i++){
++        drmModePlane*p=drmModeGetPlane(pi_scan.fd,planes->planes[i]);
++        int supports=0;
++        if(p)for(uint32_t j=0;j<p->count_formats;j++)if(p->formats[j]==format)supports=1;
++        if(p && supports && !p->fb_id && (p->possible_crtcs&(1u<<pi_scan.crtc_index)) &&
++           pi_plane_property(p->plane_id,"type",NULL)==DRM_PLANE_TYPE_OVERLAY &&
++           pi_plane_property(p->plane_id,"COLOR_ENCODING",NULL)==1 &&
++           pi_plane_property(p->plane_id,"COLOR_RANGE",NULL)==0){
++            pi_scan.plane=p->plane_id;drmModeFreePlane(p);break;
++        }
++        if(p)drmModeFreePlane(p);
++    }
++    drmModeFreePlaneResources(planes);
++    if(!pi_scan.plane)goto fail;
++    pi_scan.initialized=1;
++    fprintf(stderr,"scanout: HDMI plane %u, CRTC %u, %ux%u, BT.709 limited\n",
++            pi_scan.plane,pi_scan.crtc,pi_scan.screen_w,pi_scan.screen_h);
++    return 1;
++fail:
++    fprintf(stderr,"scanout: unavailable, retaining CPU display path (%s)\n",strerror(errno));
++    pi_scan.disabled=1;return 0;
++}
++
++static int pi_scan_draw(SDL_Window *win,const AVFrame *frame,const SDL_Rect *crop)
++{
++    const AVDRMFrameDescriptor*d=(const AVDRMFrameDescriptor*)frame->data[0];
++    if(!d || d->nb_layers!=1 || d->nb_objects<1 || d->nb_objects>4)return 0;
++    const AVDRMLayerDescriptor*l=&d->layers[0];
++    if(l->nb_planes<1 || l->nb_planes>4 || !pi_scan_init(win,l->format))return 0;
++    drmVBlank v={0};v.request.type=(drmVBlankSeqType)(DRM_VBLANK_RELATIVE|
++        (pi_scan.crtc_index<<DRM_VBLANK_HIGH_CRTC_SHIFT));
++    if(drmWaitVBlank(pi_scan.fd,&v)<0)return 0;
++    uint32_t seq=v.reply.sequence;
++    int slot=-1;
++    for(int i=0;i<8;i++){
++        if(i!=pi_scan.current && pi_scan.frames[i].frame && (int32_t)(seq-pi_scan.frames[i].seq)>=3)
++            pi_scan_release(&pi_scan.frames[i]);
++        if(!pi_scan.frames[i].frame)slot=i;
++    }
++    if(slot<0){fprintf(stderr,"scanout: no retired buffer slot\n");return 0;}
++    uint32_t objects[4]={0},handles[4]={0},pitches[4]={0},offsets[4]={0};
++    uint64_t modifiers[4]={0};uint32_t fb=0;int rc=-1,modified=0;
++    AVFrame*hold=av_frame_clone(frame);if(!hold)return 0;
++    for(int i=0;i<d->nb_objects;i++)if(drmPrimeFDToHandle(pi_scan.fd,d->objects[i].fd,&objects[i])<0)goto out;
++    for(int i=0;i<l->nb_planes;i++){
++        const AVDRMPlaneDescriptor*p=&l->planes[i];
++        if(p->object_index<0 || p->object_index>=d->nb_objects)goto out;
++        handles[i]=objects[p->object_index];pitches[i]=p->pitch;offsets[i]=p->offset;
++        modifiers[i]=d->objects[p->object_index].format_modifier;
++        if(modifiers[i]!=DRM_FORMAT_MOD_LINEAR && modifiers[i]!=DRM_FORMAT_MOD_INVALID)modified=1;
++    }
++    if(modified)rc=drmModeAddFB2WithModifiers(pi_scan.fd,frame->width,frame->height,l->format,
++        handles,pitches,offsets,modifiers,&fb,DRM_MODE_FB_MODIFIERS);
++    else rc=drmModeAddFB2(pi_scan.fd,frame->width,frame->height,l->format,handles,pitches,offsets,&fb,0);
++    if(rc<0)goto out;
++    {
++        uint32_t sx=crop?crop->x:0,sy=crop?crop->y:0;
++        uint32_t sw=crop?crop->w:frame->width,sh=crop?crop->h:frame->height;
++        double scale=fmin((double)pi_scan.screen_w/sw,(double)pi_scan.screen_h/sh);
++        uint32_t dw=(uint32_t)(sw*scale),dh=(uint32_t)(sh*scale);
++        rc=drmModeSetPlane(pi_scan.fd,pi_scan.plane,pi_scan.crtc,fb,0,
++            (pi_scan.screen_w-dw)/2,(pi_scan.screen_h-dh)/2,dw,dh,sx<<16,sy<<16,sw<<16,sh<<16);
++    }
++    if(rc==0){
++        if(pi_scan.current>=0)pi_scan.frames[pi_scan.current].seq=seq;
++        pi_scan.frames[slot]=(pi_scan_frame){fb,seq,hold};hold=NULL;fb=0;pi_scan.active=1;pi_scan.current=slot;
++        if(!pi_scan.reported){fprintf(stderr,"video: direct DRM DMA-BUF scanout active\n");pi_scan.reported=1;}
++    }
++out:
++    for(int i=0;i<d->nb_objects;i++)if(objects[i]){
++        int duplicate=0;for(int j=0;j<i;j++)if(objects[i]==objects[j])duplicate=1;
++        if(!duplicate){struct drm_gem_close close_arg={.handle=objects[i]};drmIoctl(pi_scan.fd,DRM_IOCTL_GEM_CLOSE,&close_arg);}
++    }
++    if(fb)drmModeRmFB(pi_scan.fd,fb);av_frame_free(&hold);
++    if(rc<0){fprintf(stderr,"scanout: frame rejected (%s); CPU fallback\n",strerror(errno));pi_scan_hide();pi_scan.disabled=1;}
++    return rc==0;
++}
++
+--- a/tools/raw-recv/raw-view.c
++++ b/tools/raw-recv/raw-view.c
+@@ -136,7 +136,7 @@
+ static int g_paced = 0;             /* --paced: a recording fed through the live pipeline at 60 fps, looped (tests) */
+ static double g_run_secs = 0;       /* --seconds: stop the live pipeline after this long (tests) */
+ static const char *g_shot = NULL;    /* --shot: save the last frame drawn (overlay included) as BMP (tests) */
+-static int g_start_fullscreen = 0; /* pi-switch-dock: startup fullscreen, modified 2026-11-03. GPL-2.0-only */
++static int g_start_fullscreen = 0; /* pi-switch-dock: fullscreen, async V4L2 and DRM display; modified 2026-11-03, GPL-2.0-only */
+ static int g_open_settings = 0;      /* --settings / --padmenu: the drawer open at start, on page 1 / 2 (tests) */
+ static const char *g_mp4 = NULL;     /* --mp4 FILE: record into FILE from the start (tests) */
+ static const char *g_rec_dir = NULL; /* --rec-dir DIR: where R saves (default Videos/Switch Frame Tap) */
+@@ -1516,15 +1516,20 @@
+     return rc;
+ }
+ 
+-/* one access unit in, at most one frame out (1 = frame in d->frm) */
+-static int h264_decode(h264_t *d, uint8_t *buf, int len, int64_t pts)
+-{
+-    d->pkt->data = buf;
+-    d->pkt->size = len;
+-    d->pkt->pts = pts;   /* the console's frame number, to pair output with arrival */
+-    int rc = avcodec_send_packet(d->c, d->pkt);
+-    if (rc < 0 && rc != AVERROR(EAGAIN)) return rc;
+-    rc = avcodec_receive_frame(d->c, d->frm);
++/* Receive a completed picture independently of feeding compressed data.
++ * V4L2 is asynchronous: EAGAIN means poll again, not wait for another packet. */
++#include "pi-display-rate.h"
++static SDL_atomic_t pi_fast_display;
++static int pi_scan_enabled(void) {
++    const char *value=getenv("SFT_KMS_SCANOUT");
++    return value && strcmp(value,"0");
++}
++static int pi_native_display(int width,int height) {
++    return pi_scan_enabled() && width>1280 && height>720 && SDL_AtomicGet(&pi_fast_display);
++}
++static int h264_receive(h264_t *d)
++{
++    int rc = avcodec_receive_frame(d->c, d->frm);
+     if (rc == AVERROR(EAGAIN)) return 0;
+     if (rc < 0) return rc;
+ #ifdef SFT_ZEROCOPY
+@@ -1533,7 +1538,8 @@
+         return 1;
+     }
+ #endif
+-    if (d->hwfmt != AV_PIX_FMT_NONE && d->frm->format == d->hwfmt) {   /* back from the GPU, as NV12 */
++    if (d->hwfmt != AV_PIX_FMT_NONE && d->frm->format == d->hwfmt &&
++        !(d->frm->format==AV_PIX_FMT_DRM_PRIME && pi_native_display(d->frm->width,d->frm->height))) {
+         av_frame_unref(d->swfrm);
+         rc = av_hwframe_transfer_data(d->swfrm, d->frm, 0);
+         if (rc < 0) return rc;
+@@ -1541,11 +1547,24 @@
+         av_frame_unref(d->frm);
+         av_frame_move_ref(d->frm, d->swfrm);
+     }
+-    if (d->frm->format != AV_PIX_FMT_YUV420P && d->frm->format != AV_PIX_FMT_YUVJ420P && d->frm->format != AV_PIX_FMT_NV12) {
++    if (d->frm->format != AV_PIX_FMT_YUV420P && d->frm->format != AV_PIX_FMT_YUVJ420P && d->frm->format != AV_PIX_FMT_NV12 &&
++        !(pi_scan_enabled() && d->frm->format==AV_PIX_FMT_DRM_PRIME)) {
+         av_frame_unref(d->frm);
+         return AVERROR(ENOSYS);                /* a format the display cannot draw */
+     }
+     return 1;
++}
++
++
++/* Software decoders retain their original one-access-unit call pattern. */
++static int h264_decode(h264_t *d, uint8_t *buf, int len, int64_t pts)
++{
++    d->pkt->data = buf;
++    d->pkt->size = len;
++    d->pkt->pts = pts;
++    int rc = avcodec_send_packet(d->c, d->pkt);
++    if (rc < 0 && rc != AVERROR(EAGAIN)) return rc;
++    return h264_receive(d);
+ }
+ 
+ static void h264_close(h264_t *d)
+@@ -2491,15 +2510,62 @@
+ 
+ typedef struct { h264_t *dec; FILE *rec; FILE *es; } dec_args_t;
+ 
++#include "pi-kms-scanout.h"
++
++static void decoder_queue(h264_t *dec)
++{
++    s_decoded++;
++    SDL_LockMutex(g_fm);
++    if (g_fn == FQ) {
++        av_frame_unref(g_fq[g_fh]);
++        g_fh = (g_fh + 1) % FQ;
++        g_fn--;
++    }
++    av_frame_move_ref(g_fq[(g_fh + g_fn) % FQ], dec->frm);
++    g_fn++;
++    SDL_CondSignal(g_f_put);
++    SDL_UnlockMutex(g_fm);
++}
++
++static int v4l2_drain_ready(h264_t *dec)
++{
++    /* Bound work per turn so stop/reopen is responsive even on a bad driver. */
++    for (int i = 0; i < 32; i++) {
++        const int got = h264_receive(dec);
++        if (got <= 0) return got;
++        decoder_queue(dec);
++    }
++    return 0;
++}
++
++static int is_v4l2_decoder(const h264_t *dec)
++{
++    return dec->hwname && strcmp(dec->hwname, "v4l2m2m") == 0;
++}
++
+ static int decoder_main(void *arg)
+ {
+     dec_args_t *a = arg;
+     uint8_t *payload = NULL; size_t cap = 0;
+     uint32_t last_kind = 0; int have_kind = 0;
++    pi_display_rate display_rate={0};
++    SDL_AtomicSet(&pi_fast_display,0);
++    int v4l2_errors = 0;
+     const Uint64 freq = SDL_GetPerformanceFrequency();
+     while (!g_quit && !g_dec_stop) {
+         sft_hdr_t hdr; Uint64 t_hdr = 0; int left = 0;
+-        if (!reader_pop(&hdr, &payload, &cap, &t_hdr, 50, &left)) continue;
++        if (!reader_pop(&hdr, &payload, &cap, &t_hdr, is_v4l2_decoder(a->dec) ? 2 : 50, &left)) {
++            if (is_v4l2_decoder(a->dec)) {
++                const int rc = v4l2_drain_ready(a->dec);
++                if (rc < 0 && ++v4l2_errors >= 30) {
++                    fprintf(stderr, "decode: V4L2 receive errors while idle - software\n");
++                    h264_close(a->dec); key_request();
++                    if (h264_open(a->dec, 1, 1, 0) < 0) { g_quit = 1; break; }
++                    g_dec_mode = "1 thread (GPU failed)";
++                }
++            }
++            continue;
++        }
+         s_packets++;
+         s_bytes += hdr.length;
+         if (a->rec) { fwrite(&hdr, 1, sizeof(hdr), a->rec); fwrite(payload, 1, hdr.length, a->rec); }
+@@ -2507,6 +2573,13 @@
+         if (have_kind && hdr.kind > last_kind + 1) s_lost += hdr.kind - last_kind - 1;
+         if (have_kind && hdr.kind < last_kind) { s_sessions++; fprintf(stderr, "\nnew stream session %ld (the console reattached)\n", (long)s_sessions); }
+         last_kind = hdr.kind; have_kind = 1;
++        if(pi_scan_enabled()){
++            int fast=pi_display_rate_sample(&display_rate,hdr.kind,hdr.width,hdr.height,t_hdr,freq);
++            if(fast!=SDL_AtomicGet(&pi_fast_display)){
++                SDL_AtomicSet(&pi_fast_display,fast);
++                fprintf(stderr,"video: high-rate 1080p path %s (%ux%u)\n",fast?"enabled":"disabled",hdr.width,hdr.height);
++            }
++        }
+         if (a->es) fwrite(payload, 1, hdr.length, a->es);
+         rec_video(&hdr, payload, t_hdr);
+         if (hdr.flags & SFT_FLAG_KEY) s_keyframes++;
+@@ -2524,6 +2597,39 @@
+                 g_dec_mode = g_dec_name;
+                 g_dec_low = 1; g_dec_fallback = 0;
+             }
++        }
++        if (is_v4l2_decoder(a->dec)) {
++            const Uint64 d0 = SDL_GetPerformanceCounter();
++            /* Drain before feeding too: avcodec_send_packet(EAGAIN) does not
++             * consume the packet. Keep the same packet and retry after output. */
++            int rc = v4l2_drain_ready(a->dec);
++            a->dec->pkt->data = payload;
++            a->dec->pkt->size = (int)hdr.length;
++            a->dec->pkt->pts = (int64_t)hdr.kind;
++            if (rc >= 0) {
++                rc = avcodec_send_packet(a->dec->c, a->dec->pkt);
++                for (int retries = 0; rc == AVERROR(EAGAIN) && retries < 32; retries++) {
++                    const int drained = v4l2_drain_ready(a->dec);
++                    if (drained < 0) { rc = drained; break; }
++                    rc = avcodec_send_packet(a->dec->c, a->dec->pkt);
++                }
++                if (rc >= 0) rc = v4l2_drain_ready(a->dec);
++            }
++            const double dm = (double)(SDL_GetPerformanceCounter()-d0)*1000.0/freq;
++            g_kb_pts[hdr.kind & 255] = hdr.length/1024.0f;
++            g_dec_pts[hdr.kind & 255] = (float)dm;
++            g_key_pts[hdr.kind & 255] = !!(hdr.flags & SFT_FLAG_KEY);
++            s_dec_ms += dm; if (dm > s_dec_max) s_dec_max = dm;
++            if (rc < 0) {
++                s_undecoded++;
++                if (++v4l2_errors >= 30) {
++                    fprintf(stderr, "decode: repeated V4L2 errors - software\n");
++                    h264_close(a->dec); key_request();
++                    if (h264_open(a->dec, 1, 1, 0) < 0) { g_quit = 1; break; }
++                    g_dec_mode = "1 thread (GPU failed)";
++                }
++            } else v4l2_errors = 0;
++            continue;
+         }
+         const Uint64 d0 = SDL_GetPerformanceCounter();
+         const int got = h264_decode(a->dec, payload, (int)hdr.length, (int64_t)hdr.kind);
+@@ -2567,17 +2673,7 @@
+         }
+         if (got < 0) { s_undecoded++; continue; }
+         if (got == 0) continue;
+-        s_decoded++;
+-        SDL_LockMutex(g_fm);
+-        if (g_fn == FQ) {                      /* the display is far behind: make room */
+-            av_frame_unref(g_fq[g_fh]);
+-            g_fh = (g_fh + 1) % FQ;
+-            g_fn--;
+-        }
+-        av_frame_move_ref(g_fq[(g_fh + g_fn) % FQ], a->dec->frm);
+-        g_fn++;
+-        SDL_CondSignal(g_f_put);
+-        SDL_UnlockMutex(g_fm);
++        decoder_queue(a->dec);
+     }
+     free(payload);
+     return 0;
+@@ -2662,6 +2758,8 @@
+             if (g_menu) menu_draw(ren); else viewer_repaint();
+         }
+         if (g_ren_swap) {                      /* v0.7.11: the upscaler wants the other renderer */
++            pi_scan_hide();
++            if(!pi_scan.active)pi_scan=(typeof(pi_scan)){.fd=-1,.current=-1};
+             ren_swap(&win, &ren, &tex);
+             W = H = 0;
+             if (g_quit) break;
+@@ -2671,6 +2769,9 @@
+         if (g_run_secs > 0 && (double)(SDL_GetPerformanceCounter() - t_start) / (double)freq >= g_run_secs) break;
+         if (g_lost) {
+             /* the Switch left the bus (rebooted, cable out) */
++            /* The waiting UI is on SDL's plane, below the direct video plane. */
++            pi_scan_hide();
++            /* Release scanout references before waiting for the next device. */
+             const int never_streamed = (g_conn == CONN_NET && !g_net_got_stream);
+             reader_stop();
+             transport_close();
+@@ -2702,11 +2800,12 @@
+                     g_menu_state = t_prev_show ? MENU_PAUSED : MENU_CONNECTED;
+                     if (t_prev_show) fprintf(stderr, "\nno new picture for 8 s - showing the menu\n");
+                 }
+-                if (g_menu && (double)(nowm - t_menu) / (double)freq > 0.2) { menu_draw(ren); t_menu = nowm; }
++                if (g_menu && (double)(nowm - t_menu) / (double)freq > 0.2) { pi_scan_hide(); menu_draw(ren); t_menu = nowm; }
+             }
+             goto stats;
+         }
+-        while (g_fn > 2) {                     /* the latency cap: at most two frames behind */
++        const int display_limit=pi_native_display(g_fq[g_fh]->width,g_fq[g_fh]->height)?1:2;
++        while (g_fn > display_limit) {          /* Only high-rate 1080p selects the latest completed frame. */
+             av_frame_unref(g_fq[g_fh]);
+             g_fh = (g_fh + 1) % FQ;
+             g_fn--;
+@@ -2733,6 +2832,27 @@
+                 if (tex) SDL_RenderSetLogicalSize(ren, (int)W, (int)H);
+                 SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+             }
++            ui_cursor_update(); /* Direct scanout bypasses ui_overlay, but shares its cursor policy. */
++            int direct=0;
++            if(show->format==AV_PIX_FMT_DRM_PRIME && pi_native_display(show->width,show->height) &&
++               pic_neutral() && view_is_default() && g_upscaler==UP_OFF && !g_ui_open && !rec_active() && !g_shot &&
++               g_hud==HUD_OFF && !g_hud_toast && (SDL_GetWindowFlags(win)&SDL_WINDOW_FULLSCREEN_DESKTOP) &&
++               (!g_ui_ptr_inside || ui_pointer_idle())){
++                W=show->width;H=show->height;
++                uint32_t c=g_crop_wh[show->pts&255];int cw=(c>>16)&~1,ch=(c&65535)&~1;
++                int ok=c && cw>=64 && ch>=64 && cw<=(int)W && ch<=(int)H && (cw<(int)W || ch<(int)H);
++                int mid=ok && g_crop_mid[show->pts&255];
++                SDL_Rect crop={mid?(((int)W-cw)/2)&~1:0,mid?(((int)H-ch)/2)&~1:0,cw,ch};
++                direct=pi_scan_draw(win,show,ok?&crop:NULL);
++                if(direct && tex){SDL_DestroyTexture(tex);tex=NULL;}
++            }
++            if(!direct){
++                pi_scan_hide();
++                if(show->format==AV_PIX_FMT_DRM_PRIME){
++                    AVFrame*cpu=av_frame_alloc();
++                    if(!cpu || av_hwframe_transfer_data(cpu,show,0)<0){av_frame_free(&cpu);av_frame_unref(show);goto stats;}
++                    av_frame_copy_props(cpu,show);av_frame_unref(show);av_frame_move_ref(show,cpu);av_frame_free(&cpu);
++                }
+             int zc_drawn = 0;
+ #ifdef SFT_ZEROCOPY
+             if (show->format == AV_PIX_FMT_VAAPI) {   /* zerocopy.h */
+@@ -2807,6 +2927,7 @@
+                 g_shot = NULL;
+             }
+             SDL_RenderPresent(ren);            /* waits for the display's refresh (vsync) */
++            } /* CPU/UI path unchanged */
+             const Uint64 now = SDL_GetPerformanceCounter();
+             w_draw += (double)(now - r0) * 1000.0 / (double)freq;
+             shown++; w_shown++;
+@@ -2881,6 +3002,7 @@
+         }
+     }
+ 
++    pi_scan_hide();
+     reader_stop();
+     g_dec_stop = 1;
+     SDL_WaitThread(dth, NULL);
+@@ -3129,6 +3251,7 @@
+ #endif
+     /* Ctrl-C before the first frame still ends with the summary below */
+     signal(SIGINT, on_sigint);
++    signal(SIGTERM, on_sigint);
+     if (check) return run_check(net_host);
+ 
+     libusb_context *ctx = NULL;
+--- a/tools/raw-recv/ui.h
++++ b/tools/raw-recv/ui.h
+@@ -992,17 +992,23 @@
+     if (g_ui_cursor_hidden) { SDL_ShowCursor(SDL_ENABLE); g_ui_cursor_hidden = 0; }
+ }
+ 
+-/* Hover chrome (Settings + borderless window buttons) and the drawer, over the picture */
+-static void ui_overlay(SDL_Renderer *ren, int W, int H)
+-{
+-    g_ui_nhits = 0;
+-    if (H <= 0) return;
++/* Share upstream cursor visibility with the Pi direct-display path. */
++static void ui_cursor_update(void)
++{
+     {
+         SDL_Window *w = g_paint_win;
+         const int fs = w && (SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN);
+         const int hide = fs && !g_ui_open && g_ui_ptr_inside && ui_pointer_idle();
+         if (hide != g_ui_cursor_hidden) { SDL_ShowCursor(hide ? SDL_DISABLE : SDL_ENABLE); g_ui_cursor_hidden = hide; }
+     }
++}
++
++/* Hover chrome (Settings + borderless window buttons) and the drawer, over the picture */
++static void ui_overlay(SDL_Renderer *ren, int W, int H)
++{
++    g_ui_nhits = 0;
++    if (H <= 0) return;
++    ui_cursor_update();
+     if (g_ui_open) {
+         if (text_init(ren) != 0) return;
+         SDL_BlendMode old;
