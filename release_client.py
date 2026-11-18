@@ -45,7 +45,9 @@ def fetch(url):
         return response.read()
 
 
-def find_release(tag=None):
+def find_release(tag=None, candidate=False):
+    if candidate and not tag:
+        raise ValueError("Candidate installation requires an explicit project tag")
     if tag:
         version(tag)
     try:
@@ -55,8 +57,11 @@ def find_release(tag=None):
             raise ValueError("No published pi-switch-dock release available. Receiver unchanged.") from error
         raise
     version(release["tag_name"])
-    if release.get("draft") or release.get("prerelease") or (tag and release["tag_name"] != tag):
-        raise ValueError("Only published stable pi-switch-dock releases are accepted")
+    if release.get("draft") or (tag and release["tag_name"] != tag):
+        raise ValueError("Only published releases matching the requested tag are accepted")
+    if bool(release.get("prerelease")) != candidate:
+        raise ValueError("Candidate mode requires a published prerelease" if candidate else
+                         "Only published stable pi-switch-dock releases are accepted")
     assets = {item["name"]: item for item in release["assets"]}
     if ASSET not in assets or "SHA256SUMS" not in assets:
         raise ValueError("Project release is incomplete: tools bundle/checksum missing")
@@ -160,14 +165,19 @@ def main():
     mode.add_argument("--reinstall", action="store_true", help="Rebuild the installed project release")
     mode.add_argument("--cleanup", action="store_true")
     parser.add_argument("tag", nargs="?", help="Our project tag, never an upstream version")
+    parser.add_argument("--candidate", metavar="TAG", help="Explicitly select a published project prerelease for this invocation only")
     args = parser.parse_args()
+    if args.candidate and (args.operation != "update" or args.tag or args.cleanup):
+        parser.error("Use update --candidate TAG, optionally with --check or --reinstall")
     if args.cleanup and (args.operation != "update" or args.tag):
         parser.error("Use update --cleanup without a tag")
+    def selected_release():
+        return find_release(args.candidate, candidate=True) if args.candidate else find_release(args.tag)
     if args.check:
-        release, _ = find_release(args.tag)
+        release, _ = selected_release()
         current = installed_version()
         print(f"Installed pi-switch-dock: {current or 'not installed'}")
-        print(f"Published pi-switch-dock: {release['tag_name']}")
+        print(f"{'Candidate' if args.candidate else 'Published'} pi-switch-dock: {release['tag_name']}")
         print("Update available." if newer(release["tag_name"], current) else "No newer project release.")
         return
     if os.geteuid() != 0:
@@ -182,7 +192,7 @@ def main():
             subprocess.run(["bash", str(Path(__file__).with_name("deploy.sh")), "--cleanup"], check=True,
                            env={**os.environ, "PI_SWITCH_DOCK_RELEASE_LOCKED": "1"})
             return
-        release, assets = find_release(args.tag)
+        release, assets = selected_release()
         tag = release["tag_name"]
         current = installed_version()
         if current and version(tag) < version(current):

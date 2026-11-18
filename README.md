@@ -68,6 +68,9 @@ sudo pi-switch-dock-update
 ```
 
 Updates come from stable releases of `vault-boy-13/pi-switch-dock`.
+For explicit candidate testing, use
+`sudo pi-switch-dock-update --candidate v0.7.22` (add `--check` to preview).
+Candidates must be published prereleases; ordinary updates ignore them.
 If the version is already installed, the command makes no changes.
 To force a rebuild of the selected release:
 
@@ -193,6 +196,9 @@ sudo pi-switch-dock-update
 ```
 
 Обновления берутся из стабильных релизов `vault-boy-13/pi-switch-dock`.
+Для явной проверки кандидата используйте
+`sudo pi-switch-dock-update --candidate v0.7.22` (`--check` для проверки наличия).
+Кандидат должен быть опубликован как prerelease; обычное обновление его пропускает.
 Если версия уже установлена, команда ничего не меняет.
 Для принудительной повторной сборки выбранного релиза:
 

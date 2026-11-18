@@ -64,13 +64,15 @@ class SplashInstallTests(unittest.TestCase):
         drm.mkdir(parents=True)
         (drm / "status").write_text("connected\n")
         code = (ROOT / "install-splash.sh").read_text()
-        start = code.index('BUNDLE=')
-        end = code.index('\n', start)
-        code = code[:start] + 'BUNDLE="' + shell_path(ROOT) + '"' + code[end:]
         code = code.replace(' && $EUID == 0', '')
         prefixes = ("/var/lib", "/usr/local", "/etc/systemd/system", "/boot/firmware", "/sys/class", "/tmp")
         code = re.sub("|".join(map(re.escape, prefixes)),
                       lambda match: shell_path(self.root) + match[0], code)
+        # Insert the source path after redirecting system paths; the checkout
+        # itself may live under /tmp and must not be redirected into the fixture.
+        start = code.index('BUNDLE=')
+        end = code.index('\n', start)
+        code = code[:start] + 'BUNDLE="' + shell_path(ROOT) + '"' + code[end:]
         mocks = '''
 cc() { local target="${!#}"; printf '#!/bin/sh\nexit 0\n' > "$target"; chmod 755 "$target"; }
 pkg-config() { :; }

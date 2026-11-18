@@ -1,7 +1,10 @@
 #!/usr/bin/env pwsh
+# SPDX-License-Identifier: GPL-2.0-only
 [CmdletBinding()]
 param(
-    # Publish immediately after creating and verifying the draft release.
+    # Expose the new prerelease for explicit candidate installations.
+    [switch]$Candidate,
+    # Promote an existing, tested public prerelease without replacing assets.
     [switch]$Publish
 )
 
@@ -25,6 +28,7 @@ function Invoke-Checked {
 }
 
 try {
+    if ($Candidate -and $Publish) { throw 'Use -Candidate or -Publish, not both.' }
     foreach ($command in @('git', 'gh', 'python')) {
         if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
             throw "Required command not found: $command"
@@ -71,6 +75,45 @@ with tarfile.open(sys.argv[1], 'r:gz') as archive:
     }
 
     $null = Invoke-Checked 'gh' @('auth', 'status', '--hostname', 'github.com') 'GitHub authentication check'
+
+    if ($Publish) {
+        $json = Invoke-Checked 'gh' @('release', 'view', $tag, '--repo', $Repo,
+            '--json', 'tagName,isDraft,isPrerelease,assets') 'Reading candidate for promotion'
+        $candidateRelease = ($json -join "`n") | ConvertFrom-Json
+        $assetNames = @($candidateRelease.assets | ForEach-Object { $_.name } | Sort-Object)
+        if ($candidateRelease.tagName -cne $tag -or $candidateRelease.isDraft -or
+            -not $candidateRelease.isPrerelease -or
+            (Compare-Object @('SHA256SUMS', 'pi-switch-dock-tools.tar.gz') $assetNames)) {
+            throw 'Promotion requires an existing public prerelease with exactly the two expected assets.'
+        }
+        $verifyDir = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
+        $null = New-Item -ItemType Directory -Path $verifyDir
+        try {
+            $null = Invoke-Checked 'gh' @('release', 'download', $tag, '--repo', $Repo,
+                '--dir', $verifyDir, '--pattern', 'pi-switch-dock-tools.tar.gz',
+                '--pattern', 'SHA256SUMS') 'Downloading candidate assets for comparison'
+            foreach ($name in @('pi-switch-dock-tools.tar.gz', 'SHA256SUMS')) {
+                $downloaded = (Get-FileHash -LiteralPath (Join-Path $verifyDir $name) -Algorithm SHA256).Hash
+                $local = (Get-FileHash -LiteralPath (Join-Path $Root "dist/$name") -Algorithm SHA256).Hash
+                if ($downloaded -cne $local) { throw "Candidate asset differs from local validated dist: $name" }
+            }
+        } finally {
+            # Delete only the two explicitly downloaded files and empty directory.
+            foreach ($name in @('pi-switch-dock-tools.tar.gz', 'SHA256SUMS')) {
+                $path = Join-Path $verifyDir $name
+                if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+            }
+            Remove-Item -LiteralPath $verifyDir
+        }
+        $null = Invoke-Checked 'gh' @('release', 'edit', $tag, '--repo', $Repo,
+            '--prerelease=false', '--latest', '--verify-tag') 'Promoting candidate to stable'
+        $json = Invoke-Checked 'gh' @('release', 'view', $tag, '--repo', $Repo,
+            '--json', 'isDraft,isPrerelease') 'Verifying stable release'
+        $stable = ($json -join "`n") | ConvertFrom-Json
+        if ($stable.isDraft -or $stable.isPrerelease) { throw 'Stable release verification failed.' }
+        Write-Host "Published stable release with unchanged assets: https://github.com/$Repo/releases/tag/$tag"
+        return
+    }
 
     $remote = [string](Invoke-Checked 'git' @('remote', 'get-url', 'origin') 'Reading origin URL')
     if ($remote.Trim() -notmatch '(?i)github\.com[:/]vault-boy-13/pi-switch-dock(?:\.git)?$') {
@@ -121,7 +164,7 @@ with tarfile.open(sys.argv[1], 'r:gz') as archive:
     $null = Invoke-Checked 'gh' @(
         'release', 'create', $tag, $ArchivePath, $ChecksumsPath,
         '--repo', $Repo, '--title', "pi-switch-dock $tag", '--notes', $notes,
-        '--draft', '--verify-tag'
+        '--draft', '--prerelease', '--verify-tag'
     ) 'Creating draft GitHub Release'
 
     $releaseJson = Invoke-Checked 'gh' @(
@@ -131,26 +174,26 @@ with tarfile.open(sys.argv[1], 'r:gz') as archive:
     $release = ($releaseJson -join "`n") | ConvertFrom-Json
     $expectedAssets = @('SHA256SUMS', 'pi-switch-dock-tools.tar.gz')
     $actualAssets = @($release.assets | ForEach-Object { [string]$_.name } | Sort-Object)
-    if ($release.tagName -cne $tag -or -not $release.isDraft -or $release.isPrerelease -or
+    if ($release.tagName -cne $tag -or -not $release.isDraft -or -not $release.isPrerelease -or
         (Compare-Object $expectedAssets $actualAssets)) {
         throw 'Draft release verification failed. Inspect it on GitHub; no existing release was overwritten.'
     }
 
-    if ($Publish) {
-        Write-Host 'Publishing stable release...'
+    if ($Candidate) {
+        Write-Host 'Publishing candidate prerelease...'
         $null = Invoke-Checked 'gh' @('release', 'edit', $tag, '--repo', $Repo, '--draft=false', '--verify-tag') 'Publishing GitHub Release'
         $publishedJson = Invoke-Checked 'gh' @(
             'release', 'view', $tag, '--repo', $Repo,
             '--json', 'tagName,isDraft,isPrerelease,assets'
         ) 'Verifying published GitHub Release'
         $published = ($publishedJson -join "`n") | ConvertFrom-Json
-        if ($published.tagName -cne $tag -or $published.isDraft -or $published.isPrerelease) {
-            throw 'Release was submitted for publication but did not verify as a stable published release.'
+        if ($published.tagName -cne $tag -or $published.isDraft -or -not $published.isPrerelease) {
+            throw 'Candidate did not verify as a published prerelease.'
         }
-        Write-Host "Published stable release: https://github.com/$Repo/releases/tag/$tag"
+        Write-Host "Candidate ready: sudo pi-switch-dock-update --candidate $tag"
     } else {
         Write-Host "Draft ready for review: https://github.com/$Repo/releases/tag/$tag"
-        Write-Host "After review, publish with: gh release edit $tag --repo $Repo --draft=false"
+        Write-Host "Expose candidate after review: gh release edit $tag --repo $Repo --prerelease --draft=false"
     }
 }
 catch {

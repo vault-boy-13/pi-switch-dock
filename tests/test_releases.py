@@ -67,6 +67,82 @@ class ReleasesTests(unittest.TestCase):
         self.assertFalse(client.newer("v0.7.29", "v0.7.30"))
         self.assertTrue(client.newer("v0.7.19", None))
 
+    def test_candidate_requires_explicit_tag_and_public_prerelease(self):
+        with patch.object(client, 'fetch') as fetch:
+            with self.assertRaisesRegex(ValueError, 'explicit'):
+                client.find_release(candidate=True)
+            fetch.assert_not_called()
+        for draft, prerelease, tag in ((False, True, 'v0.7.22'),
+                                       (True, True, 'v0.7.22'),
+                                       (False, False, 'v0.7.22'),
+                                       (False, True, 'v0.7.21')):
+            value = metadata(tag)
+            value.update(draft=draft, prerelease=prerelease)
+            with self.subTest(draft=draft, prerelease=prerelease, tag=tag), \
+                 patch.object(client, 'fetch', return_value=json.dumps(value).encode()) as fetch:
+                if not draft and prerelease and tag == 'v0.7.22':
+                    client.find_release('v0.7.22', candidate=True)
+                else:
+                    with self.assertRaises(ValueError):
+                        client.find_release('v0.7.22', candidate=True)
+                self.assertEqual(fetch.call_args.args[0], client.API + '/tags/v0.7.22')
+
+    def test_candidate_check_is_read_only_and_does_not_change_default_channel(self):
+        value = metadata('v0.7.22')
+        value['prerelease'] = True
+        with patch.object(client, 'fetch', return_value=json.dumps(value).encode()), \
+             patch.object(sys, 'argv', ['client', 'update', '--candidate', 'v0.7.22', '--check']), \
+             patch.object(client, 'installed_version', return_value='v0.7.20'), \
+             patch.object(client, 'download') as download, patch.object(client.subprocess, 'run') as run:
+            client.main()
+        download.assert_not_called()
+        run.assert_not_called()
+        with patch.object(client, 'fetch', return_value=json.dumps(value).encode()):
+            with self.assertRaisesRegex(ValueError, 'stable'):
+                client.find_release()
+
+    @unittest.skipIf(os.name == 'nt', 'Linux maintenance lock')
+    def test_candidate_rollback_then_stable_installs_identical_bundle(self):
+        # Rollback restores CURRENT's saved manifest; candidate channel is never
+        # stored in it. Both installations must download the same verified bytes.
+        bundle = self.bundle()
+        archive = bundle.read_bytes()
+        checksums = (hashlib.sha256(archive).hexdigest() + '  ' + client.ASSET + '\n').encode()
+        current = self.root / 'current/.pi-release.json'
+        current.parent.mkdir()
+        previous = json.dumps({'version': 'v0.7.18'})
+        current.write_text(previous)
+        real_open = open
+        lock = self.root / 'lock'
+        manifests = []
+
+        def redirected(path, *args, **kwargs):
+            return real_open(lock if path == '/run/lock/pi-switch-dock-update.lock' else path, *args, **kwargs)
+
+        def deploy(command, **kwargs):
+            self.assertEqual(Path(command[1]).name, 'deploy.sh')
+            manifest = json.loads((Path(command[1]).parent / 'release.json').read_text())
+            manifests.append(manifest)
+            current.write_text(json.dumps(manifest))
+
+        def perform(candidate):
+            release = metadata()
+            release['prerelease'] = candidate
+            argv = ['client', 'update'] + (['--candidate', 'v0.7.19'] if candidate else [])
+            with patch.object(sys, 'argv', argv), patch.object(client, 'CURRENT', current), \
+                 patch.object(client.os, 'geteuid', return_value=0), \
+                 patch('builtins.open', side_effect=redirected), \
+                 patch.object(client, 'fetch', side_effect=[json.dumps(release).encode(), checksums, archive]), \
+                 patch.object(client.subprocess, 'run', side_effect=deploy):
+                client.main()
+
+        perform(True)
+        self.assertEqual(json.loads(current.read_text())['version'], 'v0.7.19')
+        current.write_text(previous)  # The receiver rollback restores this metadata.
+        perform(False)
+        self.assertEqual(len(manifests), 2)
+        self.assertEqual(manifests[0], manifests[1])
+
     def test_draft_prerelease_incomplete_or_foreign_assets_are_rejected(self):
         for kind in ("draft", "prerelease", "missing", "foreign"):
             value = metadata()
