@@ -130,6 +130,18 @@ scripts, patches, startup screen and documentation.
 Release preparation: [RELEASING.md](RELEASING.md).
 License: [GPL-2.0-only](LICENSE). Attribution: [NOTICE](NOTICE).
 
+### Nintendo trademarks and copyrights
+
+Nintendo, Nintendo Switch and Nintendo Switch Lite are trademarks of Nintendo
+Co., Ltd. Copyrights in Nintendo software and other proprietary materials
+belong to their respective rights holders. Product names are used to identify
+compatible hardware.
+
+pi-switch-dock is an independent community project, not affiliated with,
+sponsored by or endorsed by Nintendo. This repository does not include
+Nintendo firmware, games, keys or other proprietary Nintendo software.
+The project's GPL license does not grant rights to Nintendo materials.
+
 ## Русский
 
 USB-док для Nintendo Switch Lite на базе Raspberry Pi 4. Switch Frame Tap
@@ -257,4 +269,16 @@ pi-switch-dock создан с помощью ИИ: при разработке 
 
 Подготовка релизов: [RELEASING.md](RELEASING.md).
 Лицензия: [GPL-2.0-only](LICENSE), сведения об авторстве: [NOTICE](NOTICE).
+
+### Товарные знаки и авторские права Nintendo
+
+Nintendo, Nintendo Switch и Nintendo Switch Lite — товарные знаки Nintendo
+Co., Ltd. Авторские права на программное обеспечение Nintendo и другие
+проприетарные материалы принадлежат соответствующим правообладателям.
+Названия продуктов используются для обозначения совместимого оборудования.
+
+pi-switch-dock — независимый проект сообщества, не связанный с Nintendo,
+не спонсируемый и не одобренный ею. Репозиторий не содержит прошивку, игры,
+ключи или другое проприетарное программное обеспечение Nintendo.
+Лицензия GPL проекта не предоставляет прав на материалы Nintendo.
 
