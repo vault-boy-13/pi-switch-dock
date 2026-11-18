@@ -13,6 +13,7 @@ $Root = $PSScriptRoot
 $SpecPath = Join-Path $Root 'release-spec.json'
 $ArchivePath = Join-Path $Root 'dist/pi-switch-dock-tools.tar.gz'
 $ChecksumsPath = Join-Path $Root 'dist/SHA256SUMS'
+Push-Location -LiteralPath $Root
 
 function Invoke-Checked {
     param([string]$Program, [string[]]$Arguments, [string]$Action)
@@ -87,21 +88,27 @@ with tarfile.open(sys.argv[1], 'r:gz') as archive:
     }
 
     $head = [string](Invoke-Checked 'git' @('rev-parse', 'HEAD') 'Reading HEAD')
-    $upstream = [string](Invoke-Checked 'git' @('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}') 'Reading branch upstream')
-    $upstreamHead = [string](Invoke-Checked 'git' @('rev-parse', $upstream) 'Reading pushed branch')
+    # Avoid @{u}: some Windows Git wrappers strip its braces. Query origin
+    # directly so a stale remote-tracking ref cannot pass this check.
+    $remoteBranch = @(Invoke-Checked 'git' @('ls-remote', '--heads', 'origin', "refs/heads/$($branch.Trim())") 'Reading pushed branch')
+    if ($remoteBranch.Count -ne 1) { throw 'Current branch is not available on origin. Push it first.' }
+    $upstreamHead = ([string]$remoteBranch[0] -split '\s+')[0]
     if ($head.Trim() -cne $upstreamHead.Trim()) {
         throw 'Current commit differs from its pushed upstream branch. Push the branch and retry.'
     }
 
-    $existingLocalTag = & git show-ref --verify --quiet "refs/tags/$tag"
-    if ($LASTEXITCODE -eq 0) { throw "Local tag $tag already exists; refusing to overwrite it." }
+    $existingLocalTag = @(Invoke-Checked 'git' @('tag', '--list', $tag) 'Checking local tag')
+    if ($existingLocalTag.Count -gt 0) { throw "Local tag $tag already exists; refusing to overwrite it." }
     $existingRemoteTag = Invoke-Checked 'git' @('ls-remote', '--tags', 'origin', "refs/tags/$tag", "refs/tags/$tag^{}") 'Checking remote tag'
     if (@($existingRemoteTag).Count -gt 0) { throw "Remote tag $tag already exists; refusing to overwrite it." }
 
     # Fail early if a release with this tag already exists. The tag check above
     # also prevents replacing published releases or their assets.
-    $priorRelease = & gh release view $tag --repo $Repo --json tagName 2>$null
-    if ($LASTEXITCODE -eq 0) { throw "A GitHub Release for $tag already exists; refusing to replace it." }
+    $releaseListJson = Invoke-Checked 'gh' @('release', 'list', '--repo', $Repo, '--limit', '1000', '--json', 'tagName') 'Checking existing releases'
+    $releaseList = ($releaseListJson -join "`n") | ConvertFrom-Json
+    if (@($releaseList | Where-Object { $_.tagName -ceq $tag }).Count -gt 0) {
+        throw "A GitHub Release for $tag already exists; refusing to replace it."
+    }
 
     Write-Host "Release: $tag"
     Write-Host "Archive SHA256: $actualHash"
@@ -147,6 +154,9 @@ with tarfile.open(sys.argv[1], 'r:gz') as archive:
     }
 }
 catch {
-    Write-Error $_
+    Write-Error $_ -ErrorAction Continue
     exit 1
+}
+finally {
+    Pop-Location
 }
