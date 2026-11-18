@@ -52,11 +52,17 @@ try {
         throw 'SHA256SUMS does not match the release archive.'
     }
 
-    $manifestOutput = Invoke-Checked 'python' @(
-        '-c',
-        'import json,sys,tarfile; t=tarfile.open(sys.argv[1], "r:gz"); print(t.extractfile("release.json").read().decode("utf-8"))',
-        $ArchivePath
-    ) 'Reading release bundle manifest'
+    # Send code through stdin: Windows PowerShell 5.1 strips embedded quotes
+    # when passing Python code through a native command's -c argument.
+    $manifestCode = @'
+import sys, tarfile
+with tarfile.open(sys.argv[1], 'r:gz') as archive:
+    print(archive.extractfile('release.json').read().decode('utf-8'))
+'@
+    $manifestOutput = $manifestCode | & python - $ArchivePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Reading release bundle manifest failed (exit code $LASTEXITCODE)."
+    }
     $manifest = ($manifestOutput -join "`n") | ConvertFrom-Json
     if ($manifest.version -cne $tag -or $manifest.upstream_tag -cne [string]$spec.upstream_tag -or
         $manifest.upstream_sha256 -cne [string]$spec.upstream_sha256) {
