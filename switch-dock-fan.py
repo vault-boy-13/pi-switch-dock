@@ -14,11 +14,10 @@ SAMPLE_SECONDS = 2
 STARTUP_KICK_SECONDS = 2
 THERMAL_INPUT = Path("/sys/class/thermal/thermal_zone0/temp")
 
-# Duties were observed on this two-wire fan: 20% is the selected quiet level;
-# 10% stalled/twitched. Higher levels also ran steadily during short checks.
-STATES = (("off", 0), ("low", 20), ("medium", 45), ("high", 80), ("full", 100))
-UP_MILLIC = (45_000, 55_000, 65_000, 70_000)
-DOWN_MILLIC = (0, 43_000, 53_000, 63_000, 68_000)
+# The installed fan rattles at 20%; 25% is the selected minimum running duty.
+STATES = (("off", 0), ("low", 25), ("medium", 45), ("high", 80), ("full", 100))
+UP_MILLIC = (55_000, 60_000, 65_000, 70_000)
+DOWN_MILLIC = (0, 50_000, 58_000, 63_000, 68_000)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("switch-dock-fan")

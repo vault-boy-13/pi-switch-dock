@@ -34,9 +34,10 @@ SHA256.
 The installer prepares dependencies, USB, HDMI and the Lite Dock startup screen.
 The receiver is compiled on the Pi, which may take several minutes.
 Initial setup installs a GPIO18 fan-control service. Fan control requires an
-optional add-on board; the dock works without it. The fan curve is 20% from
-45 °C, 45% from 55 °C, 80% from 65 °C and 100% from 70 °C, with a brief
-100% startup kick.
+optional add-on board; the dock works without it. The fan stays off below
+55 °C, then runs at 25% from 55 °C, 45% from 60 °C, 80% from 65 °C and 100%
+from 70 °C. Cooling thresholds use hysteresis (50/58/63/68 °C); startup has a
+brief 100% kick.
 
 If the installer requests a reboot:
 
@@ -69,7 +70,7 @@ sudo pi-switch-dock-update
 
 Updates come from stable releases of `vault-boy-13/pi-switch-dock`.
 For explicit candidate testing, use
-`sudo pi-switch-dock-update --candidate v0.7.22` (add `--check` to preview).
+`sudo pi-switch-dock-update --candidate v0.7.23` (add `--check` to preview).
 Candidates must be published prereleases; ordinary updates ignore them.
 If the version is already installed, the command makes no changes.
 To force a rebuild of the selected release:
@@ -174,9 +175,10 @@ curl -fsSL https://raw.githubusercontent.com/vault-boy-13/pi-switch-dock/refs/he
 Приёмник собирается на Pi; это может занять несколько минут.
 При первой настройке устанавливается служба управления вентилятором на GPIO18.
 Для её работы нужна дополнительная плата управления вентилятором; она
-устанавливается опционально, док работает и без неё. Кривая вентилятора:
-20% от 45 °C, 45% от 55 °C, 80% от 65 °C, 100% от 70 °C; при запуске —
-кратковременно 100%.
+устанавливается опционально, док работает и без неё. До 55 °C вентилятор
+выключен; далее — 25% от 55 °C, 45% от 60 °C, 80% от 65 °C и 100% от 70 °C.
+При остывании действуют пороги гистерезиса 50/58/63/68 °C; при запуске —
+кратковременный разгон до 100%.
 
 Если установщик попросит перезагрузку:
 
@@ -209,7 +211,7 @@ sudo pi-switch-dock-update
 
 Обновления берутся из стабильных релизов `vault-boy-13/pi-switch-dock`.
 Для явной проверки кандидата используйте
-`sudo pi-switch-dock-update --candidate v0.7.22` (`--check` для проверки наличия).
+`sudo pi-switch-dock-update --candidate v0.7.23` (`--check` для проверки наличия).
 Кандидат должен быть опубликован как prerelease; обычное обновление его пропускает.
 Если версия уже установлена, команда ничего не меняет.
 Для принудительной повторной сборки выбранного релиза:

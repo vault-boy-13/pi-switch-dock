@@ -49,7 +49,7 @@ function gh {
         'view' {
             $promoting=$global:ReleaseSmoke.Case -in @('promote','mismatch')
             @{
-                tagName='v0.7.22'
+                tagName='v0.7.23'
                 isDraft=(-not $promoting -and -not $global:ReleaseSmoke.Exposed)
                 isPrerelease=(-not $global:ReleaseSmoke.Promoted)
                 assets=@(@{name='SHA256SUMS'},@{name='pi-switch-dock-tools.tar.gz'})

@@ -25,5 +25,15 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('bash "$BUNDLE/install-fan.sh"', source)
         self.assertIn('"switch-dock-fan.py"', (ROOT / "release_client.py").read_text())
 
+    def test_receiver_deploy_updates_an_installed_fan_from_the_release_bundle(self):
+        source = (ROOT / "deploy.sh").read_text()
+        self.assertIn('bash "$BUNDLE/install-fan.sh" --update', source)
+        self.assertIn('restore_fan_backup', source)
+        fan_installer = (ROOT / "install-fan.sh").read_text()
+        self.assertIn('MODE=update', fan_installer)
+        self.assertIn('restore_on_error', fan_installer)
+        tools = (ROOT / "tools.sh").read_text()
+        self.assertIn('switch-dock-fan.py switch-dock-fan.service', tools)
+
 if __name__ == "__main__":
     unittest.main()

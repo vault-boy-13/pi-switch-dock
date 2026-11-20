@@ -27,8 +27,14 @@ sudo flock -n /run/lock/pi-switch-dock-update.lock \
   env PI_SWITCH_DOCK_RELEASE_LOCKED=1 bash /path/to/verified-tools/deploy.sh --check
 ```
 
-Use the same command without `--check` to activate. After hardware checks,
-restore the exact rollback archive printed by deployment.
+Use the same command without `--check` to activate. If the fan service is
+installed, deployment updates its script/unit from the same verified bundle
+and records the prior files and active/enabled state in a separate
+`/root/pi-switch-dock/backups/fan-<timestamp>/` backup. A missing optional fan
+service stays absent. After hardware checks, restore the exact receiver
+rollback archive printed by deployment. This restores the receiver but leaves
+the release fan curve installed; if rejecting the fan change too, separately
+restore its script/unit and active/enabled state from the printed fan backup.
 
 ## Publish a candidate
 
@@ -44,20 +50,20 @@ files and exposes a **prerelease**. Ordinary installation/update ignores it.
 No arguments creates a draft prerelease instead. To expose that draft later:
 
 ```powershell
-gh release edit v0.7.22 --repo vault-boy-13/pi-switch-dock --prerelease --draft=false
+gh release edit v0.7.23 --repo vault-boy-13/pi-switch-dock --prerelease --draft=false
 ```
 
 If a draft was prepared before a tools change, first confirm `isDraft` is true:
 
 ```powershell
-gh release view v0.7.22 --repo vault-boy-13/pi-switch-dock --json isDraft,isPrerelease
+gh release view v0.7.23 --repo vault-boy-13/pi-switch-dock --json isDraft,isPrerelease
 ```
 
 Only while it is still a private draft, upload the newly packaged files before
 exposing it. Never use `--clobber` on a public candidate or stable release:
 
 ```powershell
-gh release upload v0.7.22 .\dist\pi-switch-dock-tools.tar.gz .\dist\SHA256SUMS --repo vault-boy-13/pi-switch-dock --clobber
+gh release upload v0.7.23 .\dist\pi-switch-dock-tools.tar.gz .\dist\SHA256SUMS --repo vault-boy-13/pi-switch-dock --clobber
 ```
 
 The script refuses to overwrite existing tags/releases. Never replace public
@@ -70,8 +76,8 @@ candidate revisions for one upstream tag need a version-format extension first.
 On a Pi with the candidate-aware updater:
 
 ```sh
-sudo pi-switch-dock-update --candidate v0.7.22 --check
-sudo pi-switch-dock-update --candidate v0.7.22
+sudo pi-switch-dock-update --candidate v0.7.23 --check
+sudo pi-switch-dock-update --candidate v0.7.23
 ```
 
 `--candidate TAG` requires an explicit public project prerelease; drafts,
@@ -84,8 +90,8 @@ For an older installed updater without this flag, copy the reviewed local
 directly for the first candidate check/install:
 
 ```sh
-sudo python3 /path/to/reviewed/release_client.py update --candidate v0.7.22 --check
-sudo python3 /path/to/reviewed/release_client.py update --candidate v0.7.22
+sudo python3 /path/to/reviewed/release_client.py update --candidate v0.7.23 --check
+sudo python3 /path/to/reviewed/release_client.py update --candidate v0.7.23
 ```
 
 This uses the same lock and installs the release tools. Changes to `main` alone
@@ -131,5 +137,6 @@ Without rollback the same-tag update correctly does nothing.
 
 Fresh-install splash/fan checks are required when those components change.
 Initial setup owns their installation; receiver maintenance must preserve
-splash assets, unit and boot files. Check GPIO18 levels and error behavior
-when changing fan support. Only the current layout/package format is supported.
+splash assets and boot files. Check GPIO18 levels, temperature transitions,
+startup kick and sensor-error behavior when changing fan support.
+Only the current layout/package format is supported.

@@ -270,7 +270,7 @@
  }
  
  static void h264_close(h264_t *d)
-@@ -2491,15 +2510,62 @@
+@@ -2491,16 +2510,63 @@
  
  typedef struct { h264_t *dec; FILE *rec; FILE *es; } dec_args_t;
  
@@ -310,6 +310,7 @@
  static int decoder_main(void *arg)
  {
      dec_args_t *a = arg;
+     SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);   /* perf: decode is on the critical path of every frame */
      uint8_t *payload = NULL; size_t cap = 0;
      uint32_t last_kind = 0; int have_kind = 0;
 +    pi_display_rate display_rate={0};

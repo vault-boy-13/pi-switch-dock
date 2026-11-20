@@ -17,7 +17,7 @@ BIN_ROOT="/usr/local/bin"
 # syncfs (GNU sync -f) waits for data AND directory metadata and reports I/O
 # errors. Flush each destination filesystem, including separate /opt or /root.
 persist_installation() {
-    sync -f "$BIN_ROOT" "$BUILD_ROOT" /etc/systemd/system "$STATE_DIR" /opt/pi-switch-dock
+    sync -f "$BIN_ROOT" "$BUILD_ROOT" /etc/systemd/system "$STATE_DIR" /opt/pi-switch-dock /usr/local/sbin
     if [[ -d "$BACKUP_ROOT" ]]; then sync -f "$BACKUP_ROOT"; fi
 }
 
@@ -356,12 +356,31 @@ else
 fi
 
 PREVIOUS_TOOLS="$(readlink -f /opt/pi-switch-dock/tools-current || true)"
+FAN_BACKUP=""
 PREVIOUS_DROPIN=""
 if [[ -f "$DROPIN" ]]; then PREVIOUS_DROPIN="$WORK/previous-dropin"; cp -a "$DROPIN" "$PREVIOUS_DROPIN"; fi
 PREVIOUS_SOURCE=""
 if [[ -L "$ACTIVE_SOURCE_LINK" ]]; then PREVIOUS_SOURCE="$(readlink -f "$ACTIVE_SOURCE_LINK")"; fi
 if [[ -f "$STATE_FILE" ]]; then cp -a "$STATE_FILE" "$WORK/previous-release"; fi
 save_viewer_preferences "$WORK/previous-preferences"
+restore_fan_backup() {
+    [[ -n "$FAN_BACKUP" && -d "$FAN_BACKUP" ]] || return 0
+    echo "Restoring the previous fan service from $FAN_BACKUP." >&2
+    systemctl stop switch-dock-fan.service >/dev/null 2>&1 || true
+    install -m 755 "$FAN_BACKUP/switch-dock-fan.py" /usr/local/sbin/switch-dock-fan.py || return 1
+    install -m 644 "$FAN_BACKUP/switch-dock-fan.service" /etc/systemd/system/switch-dock-fan.service || return 1
+    systemctl daemon-reload || return 1
+    if [[ "$(cat "$FAN_BACKUP/enabled-before-install.txt")" == enabled ]]; then
+        systemctl enable switch-dock-fan.service || return 1
+    else
+        systemctl disable switch-dock-fan.service || return 1
+    fi
+    if [[ "$(cat "$FAN_BACKUP/active-before-install.txt")" == active ]]; then
+        systemctl start switch-dock-fan.service || return 1
+    else
+        systemctl stop switch-dock-fan.service || return 1
+    fi
+}
 rollback_on_error() {
     rc=$?
     trap - ERR
@@ -377,6 +396,7 @@ rollback_on_error() {
     fi
     if [[ -n "$PREVIOUS_SOURCE" ]]; then ln -sfn "$PREVIOUS_SOURCE" "$SOURCE_LINK"; else rm -f "$SOURCE_LINK"; fi
     if [[ -f "$WORK/previous-release" ]]; then cp -a "$WORK/previous-release" "$STATE_FILE"; else rm -f "$STATE_FILE"; fi
+    restore_fan_backup || echo "Fan service restoration failed; inspect $FAN_BACKUP." >&2
     systemctl daemon-reload || true
     if (( BOOTSTRAP )); then systemctl reset-failed "$SERVICE" >/dev/null 2>&1 || true; else systemctl restart "$SERVICE" || true; fi
     exit "$rc"
@@ -401,6 +421,9 @@ wait_for_viewer "$NEW_BIN"
 ln -sfn "$BUILD_DIR/release" "$SOURCE_LINK"
 printf '%s\n' "$TAG" > "$STATE_FILE"
 pi_stack_configured
+FAN_OUTPUT="$(bash "$BUNDLE/install-fan.sh" --update)"
+printf '%s\n' "$FAN_OUTPUT"
+FAN_BACKUP="$(printf '%s\n' "$FAN_OUTPUT" | sed -n 's/^Fan service updated; backup: //p')"
 activate_tools "$BUNDLE"
 if (( ! BOOTSTRAP )); then mv -- "$BACKUP_DIR.tar.gz.pending" "$BACKUP_DIR.tar.gz"; fi
 # Do not commit or prune the previous installation until the new binary,

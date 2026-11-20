@@ -8,7 +8,7 @@ activate_tools() {
     install -d -m 755 "$root/tools"
     if [[ ! -d "$destination" ]]; then
         staging="$(mktemp -d "$root/tools/.staging.XXXXXX")"
-        for file in install.sh setup.sh deploy.sh rollback.sh release_client.py prepare-source.py build-receiver.sh tools.sh boot_config.py viewer-config.sh install-splash.sh splash release.json LICENSE NOTICE patches; do
+        for file in install.sh setup.sh deploy.sh rollback.sh release_client.py prepare-source.py build-receiver.sh tools.sh boot_config.py viewer-config.sh install-fan.sh switch-dock-fan.py switch-dock-fan.service install-splash.sh splash release.json LICENSE NOTICE patches; do
             cp -a "$bundle/$file" "$staging/$file"
         done
         mv -T -- "$staging" "$destination"

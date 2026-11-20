@@ -83,7 +83,7 @@ class SourcePackageTests(unittest.TestCase):
         manifest = release_client.unpack(self.root / 'dist' / release_client.ASSET,
                                          payload, spec['version'])
         self.assertNotIn('package_revision', manifest)
-        self.assertEqual(manifest['upstream_tag'], 'v0.7.22')
+        self.assertEqual(manifest['upstream_tag'], 'v0.7.23')
         adaptation = (payload / 'patches/low-latency-display.patch').read_text()
         branch = adaptation.split('         if (g_lost) {\n', 1)[1].split('             reader_stop();', 1)[0]
         self.assertIn('+            pi_scan_hide();', branch)
