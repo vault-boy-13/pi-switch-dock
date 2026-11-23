@@ -131,8 +131,8 @@
              goto stats;
          }
 -        const int display_limit=pi_native_display(g_fq[g_fh]->width,g_fq[g_fh]->height)?1:2;
-+        const int display_limit=pi_native_display(g_fq[g_fh]->width,g_fq[g_fh]->height)?
-+            (pi_scan_pacing_active()?2:1):2;
++        const int display_limit=pi_native_display(g_fq[g_fh]->width,g_fq[g_fh]->height)&&
++            SDL_AtomicGet(&pi_fast_display)?1:2;
          while (g_fn > display_limit) {          /* Only high-rate 1080p selects the latest completed frame. */
              av_frame_unref(g_fq[g_fh]);
              g_fh = (g_fh + 1) % FQ;

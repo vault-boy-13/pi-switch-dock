@@ -4,7 +4,8 @@
 
 Pin `version`, `upstream_tag` and `upstream_sha256` in `release-spec.json`.
 Both tags must match. Review upstream changes and all five Pi patches;
-preserve HDMI 1080p120/60 selection, frame pacing and USB video/audio.
+preserve HDMI 1080p120/60 selection, 1080p direct scanout and USB video/audio.
+Keep optional vblank pacing disabled by default.
 
 Run on Linux, then package:
 

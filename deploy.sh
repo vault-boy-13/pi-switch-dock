@@ -123,7 +123,7 @@ pi_stack_configured() {
     fullscreen_configured || return 1
     command="$(systemctl show -p ExecStart --value "$SERVICE")" || return 1
     environment="$(systemctl show -p Environment --value "$SERVICE")" || return 1
-    [[ "$command" == *" --app"* && "$command" == *" --hwdec"* && " $environment " == *" SFT_KMS_SCANOUT=0 "* ]] || return 1
+    [[ "$command" == *" --app"* && "$command" == *" --hwdec"* && " $environment " == *" SFT_KMS_SCANOUT=1 "* ]] || return 1
     [[ " $environment " == *" SFT_SCANOUT_PACING=0 "* && " $environment " == *" SFT_DISPLAY_POLICY=auto "* ]] || return 1
     pid="$(systemctl show -p MainPID --value "$SERVICE")" || return 1
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -323,7 +323,7 @@ Environment=SDL_VIDEODRIVER=kmsdrm
 Environment=SDL_KMSDRM_DEVICE_INDEX=$DRM_INDEX
 Environment=SDL_AUDIODRIVER=alsa
 Environment=AUDIODEV=plughw:CARD=$AUDIO_CARD,DEV=0
-Environment=SFT_KMS_SCANOUT=0
+Environment=SFT_KMS_SCANOUT=1
 Environment=SFT_SCANOUT_PACING=0
 Environment=SFT_DISPLAY_POLICY=auto
 ExecStartPre=-/usr/bin/systemctl stop lite-dock-splash.service
@@ -405,7 +405,7 @@ trap rollback_on_error ERR
 
 cat > "$DROPIN" <<EOF
 [Service]
-Environment=SFT_KMS_SCANOUT=0
+Environment=SFT_KMS_SCANOUT=1
 Environment=SFT_SCANOUT_PACING=0
 Environment=SFT_DISPLAY_POLICY=auto
 ExecStart=

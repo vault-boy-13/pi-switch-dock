@@ -97,6 +97,9 @@ and its preferences; the startup screen and boot settings are preserved.
 For displays above 1080p, the receiver selects an advertised 1080p120 mode,
 otherwise 1080p60. The display handles scaling; capture quality is preserved.
 
+At 1080p, direct DRM scanout remains active across 30/60 fps content. Vblank
+pacing is disabled by default to preserve low input latency.
+
 The Pi advertises **Lite Dock** as its HDMI-CEC OSD name. Some TVs still show
 their own source label (such as PC); that label is controlled by the TV.
 
@@ -251,6 +254,9 @@ sudo pi-switch-dock-rollback
 
 Для дисплеев выше 1080p приёмник выбирает заявленный дисплеем режим 1080p120,
 иначе 1080p60. Масштабирование выполняет дисплей; качество захвата не меняется.
+
+При 1080p прямой DRM scanout сохраняется при переходах между 30 и 60 fps.
+Синхронизация по vblank по умолчанию выключена, чтобы не увеличивать input lag.
 
 Pi сообщает имя **Lite Dock** через HDMI-CEC. Некоторые телевизоры всё равно
 показывают собственную метку входа, например PC; она настраивается на телевизоре.

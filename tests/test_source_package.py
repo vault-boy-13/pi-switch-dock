@@ -86,7 +86,7 @@ class SourcePackageTests(unittest.TestCase):
         self.assertEqual(manifest['version'], 'v0.7.23')
         self.assertEqual(manifest['upstream_tag'], 'v0.7.23')
         deployment = (payload / 'deploy.sh').read_text()
-        self.assertIn('Environment=SFT_KMS_SCANOUT=0', deployment)
+        self.assertIn('Environment=SFT_KMS_SCANOUT=1', deployment)
         self.assertIn('Environment=SFT_SCANOUT_PACING=0', deployment)
         adaptation = (payload / 'patches/low-latency-display.patch').read_text()
         branch = adaptation.split('         if (g_lost) {\n', 1)[1].split('             reader_stop();', 1)[0]

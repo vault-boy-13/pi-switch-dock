@@ -9,6 +9,34 @@ import unittest
 
 class DisplayRateTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("cc"), "C compiler required")
+    def test_native_scanout_is_not_gated_by_frame_rate(self):
+        patch = (Path(__file__).resolve().parents[1] / "patches/low-latency-display.patch").read_text()
+        section = patch.split("+++ b/tools/raw-recv/raw-view.c\n", 1)[1].split("\n--- ", 1)[0]
+        added = "\n".join(line[1:] for line in section.splitlines()
+                          if line.startswith("+") and not line.startswith("+++"))
+        start = added.index("static int pi_native_display")
+        native_display = added[start:added.index("\n}", start) + 2]
+        with tempfile.TemporaryDirectory(prefix="dock-native-display-") as tmp:
+            root = Path(tmp)
+            source = root / "test.c"
+            source.write_text(r'''
+#include <assert.h>
+static int scanout_enabled=1;
+static int pi_scan_enabled(void) { return scanout_enabled; }
+''' + native_display + r'''
+int main(void) {
+    assert(pi_native_display(1920,1080));
+    assert(!pi_native_display(1280,720));
+    scanout_enabled=0;
+    assert(!pi_native_display(1920,1080));
+    return 0;
+}
+''')
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", str(source),
+                            "-o", str(root / "test")], check=True, capture_output=True)
+            subprocess.run([str(root / "test")], check=True)
+
+    @unittest.skipUnless(shutil.which("cc"), "C compiler required")
     def test_protected_modes_and_transitions(self):
         patch = (Path(__file__).resolve().parents[1] / "patches/low-latency-display.patch").read_text()
         section = patch.split("+++ b/tools/raw-recv/pi-display-rate.h\n", 1)[1].split("\n--- ", 1)[0]

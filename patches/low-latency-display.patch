@@ -226,7 +226,7 @@
 +    return value && strcmp(value,"0");
 +}
 +static int pi_native_display(int width,int height) {
-+    return pi_scan_enabled() && width>1280 && height>720 && SDL_AtomicGet(&pi_fast_display);
++    return pi_scan_enabled() && width>1280 && height>720;
 +}
 +static int h264_receive(h264_t *d)
 +{
