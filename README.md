@@ -36,8 +36,12 @@ The receiver is compiled on the Pi, which may take several minutes.
 Initial setup installs a GPIO18 fan-control service. Fan control requires an
 optional add-on board; the dock works without it. The fan stays off below
 55 °C, then runs at 25% from 55 °C, 45% from 60 °C, 80% from 65 °C and 100%
-from 70 °C. Cooling thresholds use hysteresis (50/58/63/68 °C); startup has a
-brief 100% kick.
+from 70 °C. Cooling thresholds use hysteresis (50/58/63/68 °C). There is no
+full-speed startup kick; full speed is reserved for 70 °C and above. If the
+temperature sensor cannot be read, the fan runs at its 25% minimum.
+Setup also enables an HDMI-CEC service that advertises the name **Lite Dock**
+when the Pi boots. Whether the TV uses that name in its source menu depends on
+the TV and its CEC settings.
 
 If the installer requests a reboot:
 
@@ -93,6 +97,9 @@ and its preferences; the startup screen and boot settings are preserved.
 For displays above 1080p, the receiver selects an advertised 1080p120 mode,
 otherwise 1080p60. The display handles scaling; capture quality is preserved.
 
+The Pi advertises **Lite Dock** as its HDMI-CEC OSD name. Some TVs still show
+their own source label (such as PC); that label is controlled by the TV.
+
 The English **Lite Dock / Starting dock...** screen and quiet boot settings
 are installed once. Receiver updates, rebuilds and rollback leave them unchanged.
 The startup screen closes when the receiver starts.
@@ -103,6 +110,13 @@ Receiver status:
 
 ```sh
 systemctl status switch-frame-tap-viewer --no-pager
+```
+
+Check the HDMI-CEC name service after an update or reboot:
+
+```sh
+sudo systemctl start lite-dock-cec-name.service
+sudo journalctl -u lite-dock-cec-name.service -b --no-pager
 ```
 
 Live receiver logs:
@@ -177,8 +191,12 @@ curl -fsSL https://raw.githubusercontent.com/vault-boy-13/pi-switch-dock/refs/he
 Для её работы нужна дополнительная плата управления вентилятором; она
 устанавливается опционально, док работает и без неё. До 55 °C вентилятор
 выключен; далее — 25% от 55 °C, 45% от 60 °C, 80% от 65 °C и 100% от 70 °C.
-При остывании действуют пороги гистерезиса 50/58/63/68 °C; при запуске —
-кратковременный разгон до 100%.
+При остывании действуют пороги гистерезиса 50/58/63/68 °C. При запуске
+вентилятор не разгоняется до 100%; полная скорость включается только от 70 °C.
+Если датчик температуры недоступен, вентилятор работает на минимальных 25%.
+Установщик также включает службу HDMI-CEC, которая при загрузке Pi сообщает
+телевизору имя **Lite Dock**. Будет ли это имя отображаться в меню источников,
+зависит от телевизора и его настроек CEC.
 
 Если установщик попросит перезагрузку:
 
@@ -234,6 +252,9 @@ sudo pi-switch-dock-rollback
 Для дисплеев выше 1080p приёмник выбирает заявленный дисплеем режим 1080p120,
 иначе 1080p60. Масштабирование выполняет дисплей; качество захвата не меняется.
 
+Pi сообщает имя **Lite Dock** через HDMI-CEC. Некоторые телевизоры всё равно
+показывают собственную метку входа, например PC; она настраивается на телевизоре.
+
 Английская заставка **Lite Dock / Starting dock...** устанавливается один раз
 вместе с настройкой тихой загрузки. Обновление, повторная сборка и откат приёмника
 её не меняют. При запуске приёмника заставка закрывается.
@@ -244,6 +265,13 @@ sudo pi-switch-dock-rollback
 
 ```sh
 systemctl status switch-frame-tap-viewer --no-pager
+```
+
+Проверить службу имени HDMI-CEC после обновления или перезагрузки:
+
+```sh
+sudo systemctl start lite-dock-cec-name.service
+sudo journalctl -u lite-dock-cec-name.service -b --no-pager
 ```
 
 Логи приёмника в реальном времени:

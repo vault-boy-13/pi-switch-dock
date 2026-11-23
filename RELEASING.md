@@ -135,8 +135,10 @@ Confirm the installed project version, pinned upstream tag, running executable,
 service state, video and audio. Both candidate and stable paths are now checked.
 Without rollback the same-tag update correctly does nothing.
 
-Fresh-install splash/fan checks are required when those components change.
-Initial setup owns their installation; receiver maintenance must preserve
-splash assets and boot files. Check GPIO18 levels, temperature transitions,
-startup kick and sensor-error behavior when changing fan support.
+Fresh-install splash/fan/CEC checks are required when those components change.
+Initial setup owns splash installation; receiver maintenance must preserve its
+assets and boot files. Check GPIO18 levels, temperature transitions, no-boost
+startup, shutdown and sensor-error behavior when changing fan support. Check
+the HDMI-CEC OSD name on a CEC-enabled TV; the TV may retain its own input
+label regardless of the advertised name.
 Only the current layout/package format is supported.

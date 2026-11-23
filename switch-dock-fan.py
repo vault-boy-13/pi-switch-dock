@@ -11,7 +11,6 @@ import lgpio
 GPIO = 18
 PWM_HZ = 25
 SAMPLE_SECONDS = 2
-STARTUP_KICK_SECONDS = 2
 THERMAL_INPUT = Path("/sys/class/thermal/thermal_zone0/temp")
 
 # The installed fan rattles at 20%; 25% is the selected minimum running duty.
@@ -69,13 +68,10 @@ def main():
             raise RuntimeError(f"Cannot set GPIO18 duty to {duty}%: {result}")
 
     try:
-        result = lgpio.gpio_claim_output(chip, GPIO, 1)
+        result = lgpio.gpio_claim_output(chip, GPIO, 0)
         if result < 0:
             raise RuntimeError(f"Cannot claim GPIO18: {result}")
         claimed = True
-        drive(100)
-        log.info("Startup kick: 100%% for %d seconds", STARTUP_KICK_SECONDS)
-        time.sleep(STARTUP_KICK_SECONDS)
 
         state = None
         sensor_failed = False
@@ -83,9 +79,9 @@ def main():
             try:
                 temp = read_temperature()
             except (OSError, ValueError) as exc:
-                drive(100)
+                drive(STATES[1][1])
                 if not sensor_failed:
-                    log.error("Temperature read failed; fan forced to 100%%: %s", exc)
+                    log.error("Temperature read failed; fan set to minimum speed: %s", exc)
                 sensor_failed = True
                 state = None
                 time.sleep(SAMPLE_SECONDS)
@@ -96,10 +92,6 @@ def main():
                 sensor_failed = False
             new_state = state_for_temperature(temp) if state is None else hysteresis_state(state, temp)
             if new_state != state:
-                if state == 0 and new_state > 0:
-                    drive(100)
-                    log.info("Fan start kick before low-speed mode")
-                    time.sleep(STARTUP_KICK_SECONDS)
                 name, duty = STATES[new_state]
                 drive(duty)
                 log.info("CPU %.1f C; fan %s (%d%%)", temp / 1000, name, duty)
@@ -108,9 +100,9 @@ def main():
     finally:
         if claimed:
             try:
-                drive(100)
+                drive(0)
             except Exception:
-                log.exception("Could not force fan to 100%% during exit")
+                log.exception("Could not stop fan during exit")
         lgpio.gpiochip_close(chip)
 
 

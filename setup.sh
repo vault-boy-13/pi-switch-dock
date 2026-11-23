@@ -37,10 +37,13 @@ apt-get update
 apt-get install -y \
     build-essential ca-certificates curl python3 pkg-config patch \
     libusb-1.0-0-dev libsdl2-dev libdrm-dev libavcodec-dev libavutil-dev libavformat-dev \
-    python3-lgpio
+    python3-lgpio v4l-utils
 
 echo "Installing the temperature-controlled GPIO18 fan service."
 bash "$BUNDLE/install-fan.sh"
+
+echo "Enabling the Lite Dock HDMI-CEC name."
+bash "$BUNDLE/install-cec.sh"
 
 if [[ ! -f "$CONFIG" ]]; then
     echo "Boot configuration not found: $CONFIG" >&2

@@ -52,7 +52,7 @@ class BootstrapTests(unittest.TestCase):
                 for path in (unit, dropin):
                     content = path.read_text()
                     self.assertIn("ExecStart=/candidate --app --fullscreen --hwdec", content)
-                    for setting in ("SFT_KMS_SCANOUT=1", "SFT_SCANOUT_PACING=1", "SFT_DISPLAY_POLICY=auto"):
+                    for setting in ("SFT_KMS_SCANOUT=0", "SFT_SCANOUT_PACING=0", "SFT_DISPLAY_POLICY=auto"):
                         self.assertIn("Environment=" + setting, content)
                 content = unit.read_text()
                 self.assertIn("Environment=HOME=/root", content)

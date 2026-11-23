@@ -8,9 +8,9 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStartPre=/usr/bin/pinctrl set 18 op dh
+ExecStartPre=/usr/bin/pinctrl set 18 op dl
 ExecStart=/usr/bin/python3 /usr/local/sbin/switch-dock-fan.py
-ExecStopPost=/usr/bin/pinctrl set 18 op dh
+ExecStopPost=/usr/bin/pinctrl set 18 op dl
 Restart=always
 RestartSec=2
 

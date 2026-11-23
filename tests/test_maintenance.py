@@ -162,6 +162,13 @@ SERVICE=test
         mocks = '''
 wait_for_viewer() { echo stable; }
 pi_stack_configured() { echo verified-pi-stack; }
+bash() {
+    case "$1" in
+        "$BUNDLE/install-fan.sh") echo fan-service-updated ;;
+        "$BUNDLE/install-cec.sh") echo cec-service-updated ;;
+        *) echo "Unexpected bundle command: $*" >&2; return 1 ;;
+    esac
+}
 activate_tools() { echo tools-activated; }
 ln() { echo source-link; }
 mv() { echo archive-committed; }
@@ -194,6 +201,8 @@ trap rollback_on_error ERR
                 self.assertEqual(result.returncode, 0, result.stderr)
                 events = result.stdout.splitlines()
                 self.assertLess(events.index("source-link"), events.index("flush-1"))
+                self.assertLess(events.index("fan-service-updated"), events.index("cec-service-updated"))
+                self.assertLess(events.index("cec-service-updated"), events.index("tools-activated"))
                 if not bootstrap:
                     self.assertLess(events.index("archive-committed"), events.index("flush-1"))
                     self.assertLess(events.index("flush-1"), events.index("pruned"))

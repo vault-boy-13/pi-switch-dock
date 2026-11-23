@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Advertise Lite Dock over HDMI-CEC
+After=systemd-udev-settle.service
+Before=switch-frame-tap-viewer.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/lite-dock-cec-name.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

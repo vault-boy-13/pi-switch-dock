@@ -22,7 +22,8 @@ CURRENT = Path("/opt/pi-switch-dock/current/.pi-release.json")
 REQUIRED = {"install.sh", "setup.sh", "deploy.sh", "rollback.sh",
             "release_client.py", "tools.sh", "boot_config.py", "viewer-config.sh",
             "LICENSE", "NOTICE", "build-receiver.sh", "prepare-source.py",
-            "install-fan.sh", "switch-dock-fan.py", "switch-dock-fan.service"}
+            "install-fan.sh", "switch-dock-fan.py", "switch-dock-fan.service",
+            "install-cec.sh", "lite-dock-cec-name.py", "lite-dock-cec-name.service"}
 REQUIRED |= {"patches/" + name + ".patch" for name in
              ("v4l2-m2m", "fullscreen", "low-latency-display", "frame-pacing", "display-policy")}
 REQUIRED |= {"install-splash.sh", "splash/splash.c", "splash/boot-presentation.py",

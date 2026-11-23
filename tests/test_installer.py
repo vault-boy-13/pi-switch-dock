@@ -25,9 +25,17 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('bash "$BUNDLE/install-fan.sh"', source)
         self.assertIn('"switch-dock-fan.py"', (ROOT / "release_client.py").read_text())
 
+    def test_initial_setup_installs_hdmi_cec_name_service(self):
+        source = (ROOT / "setup.sh").read_text()
+        self.assertIn('v4l-utils', source)
+        self.assertIn('bash "$BUNDLE/install-cec.sh"', source)
+        self.assertIn('"lite-dock-cec-name.py"', (ROOT / "release_client.py").read_text())
+        self.assertIn('lite-dock-cec-name.py lite-dock-cec-name.service', (ROOT / "tools.sh").read_text())
+
     def test_receiver_deploy_updates_an_installed_fan_from_the_release_bundle(self):
         source = (ROOT / "deploy.sh").read_text()
         self.assertIn('bash "$BUNDLE/install-fan.sh" --update', source)
+        self.assertIn('bash "$BUNDLE/install-cec.sh" --update', source)
         self.assertIn('restore_fan_backup', source)
         fan_installer = (ROOT / "install-fan.sh").read_text()
         self.assertIn('MODE=update', fan_installer)
