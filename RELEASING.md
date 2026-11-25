@@ -3,9 +3,63 @@
 ## Prepare locally
 
 Pin `version`, `upstream_tag` and `upstream_sha256` in `release-spec.json`.
-Both tags must match. Review upstream changes and all five Pi patches;
+Both tags must match. Review upstream changes and all six Pi patches;
 preserve HDMI 1080p120/60 selection, 1080p direct scanout and USB video/audio.
 Keep optional vblank pacing disabled by default.
+
+### Unreleased economy mode (local validation, 2026-11-25)
+
+Hold publication until upstream **stable v0.7.24** is available. Do not publish
+these changes as v0.7.23 or against a beta. `release-spec.json` intentionally
+remains pinned to v0.7.23 for reproducibility checks. Before release, review
+the final upstream tag, adapt the complete patch stack with zero fuzz, update
+the source checksum, and repeat build and hardware acceptance.
+
+`idle-power.patch` follows `display-policy.patch`. Both initial installation
+and receiver updates set `SFT_IDLE_TIMEOUT=600`. Accepted fresh video or game
+audio resets a monotonic timer; status packets, truncated payloads, unsupported
+PCM formats and video older than 800 ms do not. After the timeout, the viewer stops the
+decoder thread, releases decoded/scanout buffers and textures, closes audio
+and its SDL subsystem, and leaves a static HDMI image. USB remains available;
+fresh media restores the decoder/audio and requests a keyframe. The normal
+streaming path and HDMI mode policy remain enabled. GPIO fan control remains
+temperature based.
+
+The project patch targets the pinned v0.7.23 source. A separately adapted
+v0.7.24-beta3 local Pi prototype validated the 600-second initial timeout and
+shortened 15-second stream disconnect/reconnect cycles; the user confirmed
+image, sound and smoothness on both initial and repeated wake. The Pi is left
+with the 600-second timeout. CPU time was below the 10 ms accounting resolution
+over a 15-second idle sample after replacing SDL's KMS event wait with an OS
+sleep. This is not a wattage measurement or a week-long physical idle test.
+
+Pure policy tests cover the exact boundary, activity resets, long idle, clock
+and activity-counter wrap, transport changes and disabled mode. An isolated
+Pi integration test exercises the real reader and 20 V4L2/audio release/resume
+cycles, including stale/status/truncated input, muted audio, buffer reference
+release and renderer replacement. To explicitly run it against a separately
+patched source tree (it uses dummy video/audio, never USB):
+
+```sh
+RUN_PI_IDLE_INTEGRATION=1 PI_IDLE_TEST_SOURCE=/absolute/path/to/tools/raw-recv/raw-view.c \
+  python3 -m unittest discover -s tests -p test_idle_power.py -v
+```
+
+The local device override `zzzzzzzz-idle-local.conf` selects the beta prototype;
+the previously installed `zzzzzz-sft-beta3.conf` is also local. Preserve both in
+a backup and retire them explicitly when migrating to stable v0.7.24, or they
+would override the managed receiver. Local rollback is available at
+`/root/pi-switch-dock/backups/idle-20261125-082954/rollback-idle.sh`; the same
+directory retains the original binary, units and preferences in `state.tar.gz`.
+
+Upstream beta3 audit: its adaptive audio cushion is automatic and Smooth
+pacing was already enabled in the tested viewer preferences. Keep those
+upstream implementations. They do not replace Pi V4L2 decoding, DMA-BUF
+scanout or advertised 1080p120/60 mode selection. Keep our optional vblank
+pacing disabled to avoid stacking two pacing mechanisms; removal of its
+remaining code needs separate 60/120 Hz validation against stable v0.7.24.
+Upstream's Windows tray Dock mode does not implement this headless Pi idle
+policy. No console update is part of this work.
 
 Run on Linux, then package:
 

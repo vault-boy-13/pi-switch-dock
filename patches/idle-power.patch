@@ -1,0 +1,371 @@
+--- a/tools/raw-recv/raw-view.c
++++ b/tools/raw-recv/raw-view.c
+@@ -132,6 +132,61 @@
+ 
+ static volatile sig_atomic_t g_quit = 0;
+ static int g_app = 0;               /* --app: survive the console leaving the bus */
++#include "pi-idle-policy.h"
++static pi_idle_policy pi_idle;
++static SDL_atomic_t pi_media_serial;
++static SDL_atomic_t pi_economy_active;
++static SDL_mutex *pi_audio_mutex;
++static void (*pi_idle_resources)(int sleeping, void *opaque);
++static void *pi_idle_opaque;
++static int pi_idle_failed;
++
++static void pi_idle_init(int app)
++{
++    const char *value = SDL_getenv("SFT_IDLE_TIMEOUT");
++    char *end = NULL;
++    unsigned long seconds = value ? strtoul(value, &end, 10) : 0;
++    if (!app || !value || !*value || *end || seconds > 86400) seconds = 0;
++    pi_idle.timeout_ms = (uint32_t)seconds * 1000;
++    pi_idle.last_media_ms = SDL_GetTicks64();
++    if (seconds) {
++        pi_audio_mutex = SDL_CreateMutex();
++        if (!pi_audio_mutex) { pi_idle.timeout_ms = 0; return; }
++        fprintf(stderr, "power: USB economy timeout %lu s\n", seconds);
++    }
++}
++
++static void pi_idle_media(void)
++{
++    if (pi_idle.timeout_ms) SDL_AtomicAdd(&pi_media_serial, 1);
++}
++
++static void pi_idle_tick(int usb)
++{
++    int change = pi_idle_step(&pi_idle, SDL_GetTicks64(),
++                             (uint32_t)SDL_AtomicGet(&pi_media_serial), usb);
++    if (!change) return;
++    SDL_AtomicSet(&pi_economy_active, pi_idle.sleeping);
++    fprintf(stderr, change > 0 ? "power: eco after %u s without media\n" :
++                                 "power: active (media received or transport changed)\n",
++            pi_idle.timeout_ms / 1000);
++    if (pi_idle_resources) pi_idle_resources(pi_idle.sleeping, pi_idle_opaque);
++}
++
++static void pi_idle_wait(void)
++{
++    /* SDL's KMS event wait can poll internally. Sleep in the OS instead;
++     * main still checks UI at 4 Hz and USB enumeration at least every 1.25 s. */
++    SDL_Delay(pi_idle.sleeping ? 250 : 50);
++}
++
++static int pi_idle_video_fresh(const sft_hdr_t *hdr)
++{
++    /* A resent old picture is not a running stream. Zero age is legacy/unknown. */
++    return (hdr->flags & SFT_FLAG_H264) && hdr->width && hdr->height &&
++           hdr->stride <= 800000;
++}
++
+ static int g_lost = 0;              /* --app: the console left; wait for it again */
+ static int g_paced = 0;             /* --paced: a recording fed through the live pipeline at 60 fps, looped (tests) */
+ static double g_run_secs = 0;       /* --seconds: stop the live pipeline after this long (tests) */
+@@ -504,7 +559,7 @@
+ static SDL_atomic_t g_volume = { 100 };   /* playback only; UI writes, reader thread reads */
+ static volatile long g_a_bytes = 0, g_a_resyncs = 0, g_a_underruns = 0;
+ 
+-static void audio_packet(const uint8_t *d, uint32_t n, uint32_t rate, uint32_t ch)
++static void audio_packet_unlocked(const uint8_t *d, uint32_t n, uint32_t rate, uint32_t ch)
+ {
+     if (!g_adev || g_mute || rate != 48000 || ch != 2 || n % 4 != 0) return;
+     const int volume = SDL_AtomicGet(&g_volume);
+@@ -539,6 +594,43 @@
+         g_a_paused = 0;
+     }
+ }
++static void audio_packet(const uint8_t *d, uint32_t n, uint32_t rate, uint32_t ch)
++{
++    if (pi_audio_mutex) SDL_LockMutex(pi_audio_mutex);
++    audio_packet_unlocked(d, n, rate, ch);
++    if (pi_audio_mutex) SDL_UnlockMutex(pi_audio_mutex);
++}
++
++static void pi_audio_open(void)
++{
++    if (pi_audio_mutex) SDL_LockMutex(pi_audio_mutex);
++    /* v0.3: the sound device (opened paused; audio_packet starts it) */
++    if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0) {
++        SDL_AudioSpec want = {0}, have = {0};
++        want.freq = 48000; want.format = AUDIO_S16LSB; want.channels = 2; want.samples = 512;
++        g_adev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
++        fprintf(stderr, "audio: %s\n", g_adev ? "48 kHz stereo" : SDL_GetError());
++    } else {
++        fprintf(stderr, "audio: %s\n", SDL_GetError());
++    }
++    g_a_paused = 1;
++    if (pi_audio_mutex) SDL_UnlockMutex(pi_audio_mutex);
++}
++
++static void pi_audio_close(void)
++{
++    if (pi_audio_mutex) SDL_LockMutex(pi_audio_mutex);
++    if (g_adev) {
++        SDL_PauseAudioDevice(g_adev, 1);
++        SDL_ClearQueuedAudio(g_adev);
++        SDL_CloseAudioDevice(g_adev);
++        g_adev = 0;
++    }
++    g_a_paused = 1;
++    SDL_QuitSubSystem(SDL_INIT_AUDIO); /* also stop the ALSA hotplug helper */
++    if (pi_audio_mutex) SDL_UnlockMutex(pi_audio_mutex);
++}
++
+ static void on_sigint(int s) { (void)s; g_quit = 1; }
+ #include "record.h"            /* v0.5: R records the stream to MP4 */
+ static const char *net_peer_for_menu(void);
+@@ -1358,8 +1450,23 @@
+             if (hdr.length > sizeof(abuf)) { static uint8_t sink[4096]; for (uint32_t k = 0; k < hdr.length; k += sizeof(sink)) read_exact(sink, (hdr.length - k) < sizeof(sink) ? (hdr.length - k) : sizeof(sink), 5000); continue; }
+             if (read_exact(abuf, hdr.length, 5000) != (int)hdr.length) continue;
+             if (hdr.flags & SFT_FLAG_STATUS) { status_packet(abuf, hdr.length); continue; }
++            if (hdr.width == 48000 && hdr.height == 2 && hdr.length % 4 == 0) pi_idle_media();
+             audio_packet(abuf, hdr.length, hdr.width, hdr.height);
+             rec_audio(abuf, hdr.length, hdr.width, hdr.height, t);
++            continue;
++        }
++        if (SDL_AtomicGet(&pi_economy_active)) {
++            /* Keep receiving on an attached USB cable with no decoder running.
++             * Never fill the decode queue with old frames while asleep. The
++             * first fresh packet wakes main; it requests an IDR on resume. */
++            uint8_t sink[4096];
++            uint32_t left = hdr.length;
++            while (left && !g_quit && !g_rd_stop && !g_lost) {
++                uint32_t part = left < sizeof(sink) ? left : sizeof(sink);
++                if (read_exact(sink, part, 5000) != (int)part) break;
++                left -= part;
++            }
++            if (!left && pi_idle_video_fresh(&hdr)) pi_idle_media();
+             continue;
+         }
+         if (g_paced) SDL_Delay(16);         /* a recording at roughly the console's pace */
+@@ -1377,6 +1484,7 @@
+             p->data = d; p->cap = hdr.length;
+         }
+         if (read_exact(p->data, hdr.length, 5000) != (int)hdr.length) continue;
++        if (pi_idle_video_fresh(&hdr)) pi_idle_media();
+         memset(p->data + hdr.length, 0, 64);
+         p->hdr = hdr;
+         p->t_hdr = t;
+@@ -2507,6 +2615,8 @@
+         /* v0.5: the menu, redrawn often enough for the keys and the REC timer;
+          * the bus is looked at every 250 ms as before */
+         beat();
++        pi_idle_tick(g_conn == CONN_USB);
++        if (pi_idle.sleeping) tex = NULL; /* live suspension may have freed it */
+         app_events(win, ren, tex);
+         pad_poll(win, !g_ui_open && !g_ip_editing);   /* v0.7.20: the Controller page's preview works before a Switch is there */
+         g_pad_redraw = 0;                  /* this loop redraws the menu every pass */
+@@ -2522,20 +2632,22 @@
+                 snprintf(t, sizeof(t), "Switch Frame Tap - connected over the network (%s), waiting for the picture", g_net_peer);
+                 SDL_SetWindowTitle(win, t);
+                 g_menu_state = MENU_CONNECTED;
+-                menu_draw(ren);
++                if (!pi_idle.sleeping) menu_draw(ren);
+                 return 1;
+             }
+-            menu_draw(ren); SDL_Delay(50); continue;
++            if (!pi_idle.sleeping) menu_draw(ren);
++            pi_idle_wait();
++            continue;
+         }
+         finder_stop();                     /* USB only */
+-        if (tick % 5 != 0) { menu_draw(ren); SDL_Delay(50); continue; }
++        if (tick % 5 != 0) { if (!pi_idle.sleeping) menu_draw(ren); pi_idle_wait(); continue; }
+         libusb_device_handle *h = libusb_open_device_with_vid_pid(ctx, SFT_VID, SFT_PID);
+         if (h) {
+             libusb_set_auto_detach_kernel_driver(h, 1);
+             if (libusb_claim_interface(h, SFT_IFACE) == 0) {
+                 SDL_SetWindowTitle(win, "Switch Frame Tap - connected, waiting for the picture");
+                 g_menu_state = MENU_CONNECTED;
+-                menu_draw(ren);
++                if (!pi_idle.sleeping) menu_draw(ren);
+                 g_usb = h;
+                 return 1;
+             }
+@@ -2565,8 +2677,8 @@
+                 g_menu_state = MENU_WAITING;
+             }
+         }
+-        menu_draw(ren);
+-        SDL_Delay(50);
++        if (!pi_idle.sleeping) menu_draw(ren);
++        pi_idle_wait();
+     }
+ }
+ 
+@@ -2795,6 +2907,60 @@
+     return 0;
+ }
+ 
++typedef struct {
++    h264_t *dec;
++    SDL_Thread **thread;
++    dec_args_t *args;
++    AVFrame *show;
++    SDL_Texture **texture;
++    SDL_Renderer **renderer;
++    uint32_t *width, *height;
++    int suspended;
++} pi_idle_live;
++
++static void pi_idle_live_transition(int sleeping, void *opaque)
++{
++    pi_idle_live *live = opaque;
++    if (sleeping && !live->suspended) {
++        g_dec_stop = 1;
++        if (*live->thread) { SDL_WaitThread(*live->thread, NULL); *live->thread = NULL; }
++        pi_scan_hide();
++        av_frame_unref(live->show);
++        SDL_LockMutex(g_fm);
++        for (int i = 0; i < FQ; i++) av_frame_unref(g_fq[i]);
++        g_fh = g_fn = 0;
++        SDL_UnlockMutex(g_fm);
++        h264_close(live->dec);
++        memset(live->dec, 0, sizeof(*live->dec));
++        pi_audio_close();
++        if (*live->texture) { SDL_DestroyTexture(*live->texture); *live->texture = NULL; }
++        g_paint_tex = NULL;
++        up_reset();
++        *live->width = *live->height = 0;
++        g_menu = 1;
++        menu_draw(*live->renderer); /* one final static waiting frame */
++        live->suspended = 1;
++        fprintf(stderr, "power: decoder/audio released; static HDMI waiting\n");
++    } else if (!sleeping && live->suspended) {
++        if (h264_open(live->dec, 1, 1, g_hwdec) != 0) {
++            fprintf(stderr, "power: decoder resume failed\n");
++            pi_idle_failed = 1; g_quit = 1; return;
++        }
++        g_dec_low = 1; g_dec_fallback = 0;
++        if (live->dec->hwname) snprintf(g_dec_name, sizeof(g_dec_name), "GPU (%s)", live->dec->hwname);
++        else snprintf(g_dec_name, sizeof(g_dec_name), "1 thread");
++        g_dec_mode = g_dec_name;
++        pi_audio_open();
++        g_dec_reopen = 0;
++        g_dec_stop = 0;
++        key_request();
++        *live->thread = SDL_CreateThread(decoder_main, "decoder", live->args);
++        if (!*live->thread) { pi_idle_failed = 1; g_quit = 1; return; }
++        live->suspended = 0;
++        fprintf(stderr, "power: decoder/audio restored\n");
++    }
++}
++
+ static int run_live(libusb_context *ctx, SDL_Window *win, SDL_Renderer *ren, int app,
+                     int low_latency, int threads, FILE *rec, FILE *es)
+ {
+@@ -2821,15 +2987,7 @@
+         apply_always_on_top(win);
+     }
+     watchdog_start();
+-    /* v0.3: the sound device (opened paused; audio_packet starts it) */
+-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0) {
+-        SDL_AudioSpec want = {0}, have = {0};
+-        want.freq = 48000; want.format = AUDIO_S16LSB; want.channels = 2; want.samples = 512;
+-        g_adev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+-        fprintf(stderr, "audio: %s\n", g_adev ? "48 kHz stereo" : SDL_GetError());
+-    } else {
+-        fprintf(stderr, "audio: %s\n", SDL_GetError());
+-    }
++    pi_audio_open();
+     vsync_apply(ren);   /* v0.7.11: V, remembered */
+     SDL_RendererInfo ri;
+     if (SDL_GetRendererInfo(ren, &ri) == 0) {
+@@ -2854,6 +3012,11 @@
+     AVFrame *show = av_frame_alloc();
+     uint32_t W = 0, H = 0;
+     int tex_nv12 = 0;
++    pi_idle_live idle_live = { &dec, &dth, &da, show, &tex, &ren, &W, &H, 0 };
++    pi_idle_resources = pi_idle_live_transition;
++    pi_idle_opaque = &idle_live;
++    pi_idle_tick(g_conn == CONN_USB);
++    if (pi_idle.sleeping) pi_idle_live_transition(1, &idle_live);
+     const Uint64 freq = SDL_GetPerformanceFrequency();
+     const Uint64 t_start = SDL_GetPerformanceCounter();
+     Uint64 t_prev_show = 0, t_win = t_start, t_menu = 0;
+@@ -2867,6 +3030,7 @@
+ 
+     while (!g_quit) {
+         beat();
++        pi_idle_tick(g_conn == CONN_USB);
+         app_events(win, ren, tex);
+         pad_poll(win, !g_ui_open && !g_ip_editing);   /* v0.7.20: the controller, when it changed */
+         if (g_pad_redraw) {                    /* the Controller page's strip or a new binding */
+@@ -2901,7 +3065,7 @@
+             continue;
+         }
+         SDL_LockMutex(g_fm);
+-        if (g_fn == 0) SDL_CondWaitTimeout(g_f_put, g_fm, 20);
++        if (g_fn == 0) SDL_CondWaitTimeout(g_f_put, g_fm, pi_idle.sleeping ? 250 : 20);
+         if (g_fn == 0) {
+             SDL_UnlockMutex(g_fm);
+         no_picture:
+@@ -2920,7 +3084,7 @@
+                     g_menu_state = t_prev_show ? MENU_PAUSED : MENU_CONNECTED;
+                     if (t_prev_show) fprintf(stderr, "\nno new picture for 8 s - showing the menu\n");
+                 }
+-                if (g_menu && (double)(nowm - t_menu) / (double)freq > 0.2) { pi_scan_hide(); menu_draw(ren); t_menu = nowm; }
++                if (!pi_idle.sleeping && g_menu && (double)(nowm - t_menu) / (double)freq > 0.2) { pi_scan_hide(); menu_draw(ren); t_menu = nowm; }
+             }
+             goto stats;
+         }
+@@ -3124,10 +3288,11 @@
+         }
+     }
+ 
++    pi_idle_resources = NULL; pi_idle_opaque = NULL;
+     pi_scan_hide();
+     reader_stop();
+     g_dec_stop = 1;
+-    SDL_WaitThread(dth, NULL);
++    if (dth) SDL_WaitThread(dth, NULL);
+     rec_join();                               /* v0.5: finish and close a recording */
+     const double secs = (double)(SDL_GetPerformanceCounter() - t_start) / (double)freq;
+     fprintf(stderr, "\n%ld packets, %ld decoded, %ld shown, %ld skipped (latency cap), %ld not decoded, %ld lost, %.1f MB in %.0f s\n",
+@@ -3153,7 +3318,7 @@
+     transport_close();
+     if (ctx) libusb_exit(ctx);
+     if (g_in) fclose(g_in);
+-    return 0;
++    return pi_idle_failed ? 1 : 0;
+ }
+ #endif
+ 
+@@ -3397,6 +3562,7 @@
+     /* Ctrl-C before the first frame still ends with the summary below */
+     signal(SIGINT, on_sigint);
+     signal(SIGTERM, on_sigint);
++    pi_idle_init(g_app && !file && !check);
+     if (check) return run_check(net_host);
+ 
+     libusb_context *ctx = NULL;
+--- a/tools/raw-recv/pi-idle-policy.h
++++ b/tools/raw-recv/pi-idle-policy.h
+@@ -0,0 +1,26 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* pi-switch-dock: inactivity is measured from media, never USB/status traffic. */
++#ifndef PI_IDLE_POLICY_H
++#define PI_IDLE_POLICY_H
++#include <stdint.h>
++typedef struct {
++    uint64_t last_media_ms;
++    uint32_t media_serial, timeout_ms;
++    int sleeping;
++} pi_idle_policy;
++
++/* 1: enter economy, -1: resume, 0: keep current state. */
++static int pi_idle_step(pi_idle_policy *p, uint64_t now, uint32_t serial, int usb)
++{
++    if (!p->timeout_ms) return 0;
++    if (!usb || serial != p->media_serial) {
++        p->media_serial = serial;
++        p->last_media_ms = now;
++        if (p->sleeping) { p->sleeping = 0; return -1; }
++    } else if (!p->sleeping && now - p->last_media_ms >= p->timeout_ms) {
++        p->sleeping = 1;
++        return 1;
++    }
++    return 0;
++}
++#endif

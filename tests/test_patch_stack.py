@@ -55,7 +55,7 @@ class PatchStackTests(unittest.TestCase):
         binary = self.root / "viewer"
         binary.write_bytes(b"known validated receiver")
         digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-        runtime = "SFT_KMS_SCANOUT=1 SFT_SCANOUT_PACING=0 SFT_DISPLAY_POLICY=auto"
+        runtime = "SFT_KMS_SCANOUT=1 SFT_SCANOUT_PACING=0 SFT_DISPLAY_POLICY=auto SFT_IDLE_TIMEOUT=600"
         mocks = '''
 fullscreen_configured() { return 0; }
 systemctl() {
@@ -71,6 +71,8 @@ readlink() { if [[ "$2" == /proc/* ]]; then echo "$VIEWER_BINARY"; else echo "$V
             ("valid", f"v0.7.19 stack1 {digest}", "viewer --app --hwdec", runtime, True),
             ("no pacing", f"v0.7.19 stack1 {digest}", "viewer --app --hwdec", "SFT_KMS_SCANOUT=1 SFT_DISPLAY_POLICY=auto", False),
             ("no display policy", f"v0.7.19 stack1 {digest}", "viewer --app --hwdec", "SFT_KMS_SCANOUT=1 SFT_SCANOUT_PACING=0", False),
+            ("no idle policy", f"v0.7.19 stack1 {digest}", "viewer --app --hwdec", "SFT_KMS_SCANOUT=1 SFT_SCANOUT_PACING=0 SFT_DISPLAY_POLICY=auto", False),
+            ("test timeout", f"v0.7.19 stack1 {digest}", "viewer --app --hwdec", runtime.replace("SFT_IDLE_TIMEOUT=600", "SFT_IDLE_TIMEOUT=15"), False),
             ("old patches", f"v0.7.19 stack0 {digest}", "viewer --app --hwdec", "SFT_KMS_SCANOUT=1", False),
             ("other binary", "v0.7.19 stack1 deadbeef", "viewer --app --hwdec", "SFT_KMS_SCANOUT=1", False),
             ("old release", f"v0.7.18 stack1 {digest}", "viewer --app --hwdec", "SFT_KMS_SCANOUT=1", False),

@@ -5,7 +5,7 @@ set -Eeuo pipefail
 SRC="$(realpath "$1")"
 TAG="$2"
 PATCH_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/patches" && pwd)"
-PI_PATCHES=(v4l2-m2m.patch fullscreen.patch low-latency-display.patch frame-pacing.patch display-policy.patch)
+PI_PATCHES=(v4l2-m2m.patch fullscreen.patch low-latency-display.patch frame-pacing.patch display-policy.patch idle-power.patch)
 apply_pi_patches() {
     local name
     for name in "${PI_PATCHES[@]}"; do

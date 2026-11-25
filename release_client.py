@@ -25,7 +25,7 @@ REQUIRED = {"install.sh", "setup.sh", "deploy.sh", "rollback.sh",
             "install-fan.sh", "switch-dock-fan.py", "switch-dock-fan.service",
             "install-cec.sh", "lite-dock-cec-name.py", "lite-dock-cec-name.service"}
 REQUIRED |= {"patches/" + name + ".patch" for name in
-             ("v4l2-m2m", "fullscreen", "low-latency-display", "frame-pacing", "display-policy")}
+             ("v4l2-m2m", "fullscreen", "low-latency-display", "frame-pacing", "display-policy", "idle-power")}
 REQUIRED |= {"install-splash.sh", "splash/splash.c", "splash/boot-presentation.py",
              "splash/lite-dock-splash.service"}
 REQUIRED |= {"splash/" + name + ".bmp" for name in ("card", "halo", "dot", "bar")}

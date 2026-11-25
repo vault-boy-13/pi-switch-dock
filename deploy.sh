@@ -125,6 +125,7 @@ pi_stack_configured() {
     environment="$(systemctl show -p Environment --value "$SERVICE")" || return 1
     [[ "$command" == *" --app"* && "$command" == *" --hwdec"* && " $environment " == *" SFT_KMS_SCANOUT=1 "* ]] || return 1
     [[ " $environment " == *" SFT_SCANOUT_PACING=0 "* && " $environment " == *" SFT_DISPLAY_POLICY=auto "* ]] || return 1
+    [[ " $environment " == *" SFT_IDLE_TIMEOUT=600 "* ]] || return 1
     pid="$(systemctl show -p MainPID --value "$SERVICE")" || return 1
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
     binary="$(readlink -f "/proc/$pid/exe")" || return 1
@@ -155,7 +156,7 @@ done
 PREFERENCES_HELPER="$BUNDLE/viewer-config.sh"
 . "$PREFERENCES_HELPER"
 . "$BUNDLE/tools.sh"
-PI_PATCHES=(v4l2-m2m.patch fullscreen.patch low-latency-display.patch frame-pacing.patch display-policy.patch)
+PI_PATCHES=(v4l2-m2m.patch fullscreen.patch low-latency-display.patch frame-pacing.patch display-policy.patch idle-power.patch)
 PATCH_DIR="$BUNDLE/patches"
 # Entire published bundle identifies scripts, patched source and executable.
 PI_STACK_HASH="$(sha256sum "$BUNDLE/release.json")"
@@ -326,6 +327,7 @@ Environment=AUDIODEV=plughw:CARD=$AUDIO_CARD,DEV=0
 Environment=SFT_KMS_SCANOUT=1
 Environment=SFT_SCANOUT_PACING=0
 Environment=SFT_DISPLAY_POLICY=auto
+Environment=SFT_IDLE_TIMEOUT=600
 ExecStartPre=-/usr/bin/systemctl stop lite-dock-splash.service
 ExecStart=$NEW_BIN --app --fullscreen --hwdec
 Restart=on-failure
@@ -408,6 +410,7 @@ cat > "$DROPIN" <<EOF
 Environment=SFT_KMS_SCANOUT=1
 Environment=SFT_SCANOUT_PACING=0
 Environment=SFT_DISPLAY_POLICY=auto
+Environment=SFT_IDLE_TIMEOUT=600
 ExecStart=
 ExecStart=$NEW_BIN --app --fullscreen --hwdec
 EOF
