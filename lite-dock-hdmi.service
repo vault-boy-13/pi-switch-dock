@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Lite Dock HDMI readiness and TV wake
+After=lite-dock-cec-name.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/sbin/lite-dock-hdmi.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

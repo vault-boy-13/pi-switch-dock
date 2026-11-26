@@ -197,3 +197,28 @@ startup, shutdown and sensor-error behavior when changing fan support. Check
 the HDMI-CEC OSD name on a CEC-enabled TV; the TV may retain its own input
 label regardless of the advertised name.
 Only the current layout/package format is supported.
+
+For the local HDMI/CEC prototype, install `lite-dock-hdmi.py` in
+`/usr/local/sbin`, `lite-dock-hdmi.service` in `/etc/systemd/system`, and
+`hdmi-ready.conf` in the viewer service drop-in directory. Enable the HDMI
+service after reloading systemd. These files are staged for local device testing
+and are outside the current release archive. The monitor uses this viewer's
+Linux statistics log to detect picture or audio after a pause. When HDMI has no
+usable mode, USB enumeration is the trigger because the viewer cannot run yet.
+Validate cold boot with the TV in standby, delayed HDMI availability, media
+start without a Pi reboot, and a TV with CEC disabled before packaging.
+
+On the test Pi, the TV woke at service startup. After the TV was switched off
+with its remote, `Image View On` alone left it in standby. Sending it followed by
+`Active Source` woke the TV. Reconnecting the Switch reproduced automatic wake
+with working video and audio. The no-mode systemd condition was checked on the
+Pi with a temporary service, and a ten-hour wait was simulated in a test.
+A physical cold boot and delayed display test are still pending. The Pi's
+rollback script is under `/root/pi-switch-dock/backups/hdmi-wake-20261126-225741/`.
+
+The local drop-in also chooses the HDMI audio device at viewer startup.
+HDMI-A-1 uses `vc4hdmi0` and HDMI-A-2 uses `vc4hdmi1`. Moving the cable to
+the other port restarts the viewer with the matching device. A connected
+port with a valid EDID is eligible even when the kernel's mode list is still
+empty. The test Pi opened the correct PCM device on each port. The user
+confirmed video and game audio after moving the cable to HDMI-A-1.
